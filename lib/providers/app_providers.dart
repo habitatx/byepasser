@@ -1,5 +1,6 @@
 import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:hooks_riverpod/legacy.dart';
 
 import '../models/note.dart';
 import '../models/app_settings.dart';
@@ -110,6 +111,8 @@ final noteCountProvider = Provider<int>(
 final recycledNoteCountProvider = Provider<int>(
   (ref) => ref.watch(recycledNotesProvider).length,
 );
+
+final boardInsertAfterNoteIdProvider = StateProvider<String?>((ref) => null);
 
 /// Services
 final notificationServiceProvider = Provider<NotificationService>((ref) {

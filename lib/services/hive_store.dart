@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import '../models/note.dart';
 import '../models/app_settings.dart';
 import '../models/board.dart';
+import 'image_file_store.dart';
 
 /// Central local storage manager using Hive.
 /// All data stays 100% on device.
@@ -20,6 +21,7 @@ class HiveStore {
 
   static Future<HiveStore> open() async {
     final dir = await getApplicationDocumentsDirectory();
+    ImageFileStore.configureDocumentsPath(dir.path);
     await Hive.initFlutter(dir.path);
 
     // Register manual adapters (no build_runner required)
@@ -47,6 +49,7 @@ class HiveStore {
       await store.boardsBox.put(defaultBoardId, Board.defaults());
     }
     await store._ensureBoardState();
+    await store._repairImagePaths();
 
     return store;
   }
@@ -75,6 +78,51 @@ class HiveStore {
         await notesBox.put(note.id, note.copyWith(boardId: defaultBoardId));
       }
     }
+  }
+
+  Future<void> _repairImagePaths() async {
+    for (final note in notesBox.values.toList()) {
+      final attachmentPaths = note.attachmentPaths
+          .map(ImageFileStore.canonicalStoredPath)
+          .toList();
+      final crossReferenceImagePath = note.crossReferenceImagePath == null
+          ? null
+          : ImageFileStore.canonicalStoredPath(note.crossReferenceImagePath!);
+
+      final attachmentsChanged = !_sameStrings(
+        note.attachmentPaths,
+        attachmentPaths,
+      );
+      final crossReferenceChanged =
+          note.crossReferenceImagePath != crossReferenceImagePath;
+
+      if (attachmentsChanged || crossReferenceChanged) {
+        await notesBox.put(
+          note.id,
+          note.copyWith(
+            attachmentPaths: attachmentPaths,
+            crossReferenceImagePath: crossReferenceImagePath,
+          ),
+        );
+      }
+    }
+
+    for (final board in boardsBox.values.toList()) {
+      final imagePath = board.imagePath;
+      if (imagePath == null) continue;
+      final repairedPath = ImageFileStore.canonicalStoredPath(imagePath);
+      if (repairedPath != imagePath) {
+        await boardsBox.put(board.id, board.copyWith(imagePath: repairedPath));
+      }
+    }
+  }
+
+  bool _sameStrings(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   /// Called on launch (and periodically). Deletes notes past their expiresAt.

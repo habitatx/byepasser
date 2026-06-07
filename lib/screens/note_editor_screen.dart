@@ -1,18 +1,17 @@
-import 'dart:io';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/app_settings.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
 import '../services/export_service.dart';
+import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
 import 'image_annotator_screen.dart';
@@ -54,6 +53,7 @@ class NoteEditorScreen extends HookConsumerWidget {
     final attachmentPaths = useState<List<String>>(
       List<String>.from(note?.attachmentPaths ?? const <String>[]),
     );
+    final isPickingAttachment = useState(false);
 
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final settings = ref.watch(settingsProvider);
@@ -205,37 +205,66 @@ class NoteEditorScreen extends HookConsumerWidget {
     }
 
     Future<void> addAttachment(ImageSource source) async {
-      final picked = await picker.pickImage(
-        source: source,
-        imageQuality: 86,
-        maxWidth: 1800,
-      );
-      if (picked == null) return;
-      final dir = await getApplicationDocumentsDirectory();
-      final ext = picked.path.split('.').last;
-      final safeExt = ext.length <= 5 ? ext : 'jpg';
-      final fileName =
-          'note_attachment_${DateTime.now().millisecondsSinceEpoch}.$safeExt';
-      final target = File('${dir.path}/$fileName');
-      await File(picked.path).copy(target.path);
-      attachmentPaths.value = [...attachmentPaths.value, target.path];
-      await haptics.selection();
-      if (!context.mounted) return;
-      final annotated = await openImageAnnotator(context, target.path);
-      if (annotated) {
-        attachmentPaths.value = [...attachmentPaths.value];
-        ref.invalidate(notesProvider);
+      if (isPickingAttachment.value) return;
+      isPickingAttachment.value = true;
+      FocusManager.instance.primaryFocus?.unfocus();
+
+      try {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+        if (!context.mounted) return;
+
+        final picked = await picker.pickImage(
+          source: source,
+          imageQuality: 86,
+          maxWidth: 1800,
+          requestFullMetadata: false,
+        );
+        if (picked == null) return;
+
+        final storedPath = await ImageFileStore.saveNoteAttachment(picked.path);
+        attachmentPaths.value = [...attachmentPaths.value, storedPath];
+        await haptics.selection();
+        if (!context.mounted) return;
+        final annotated = await openImageAnnotator(context, storedPath);
+        if (annotated) {
+          attachmentPaths.value = [...attachmentPaths.value];
+          ref.invalidate(notesProvider);
+        }
+      } on PlatformException {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not open image picker')),
+        );
+      } catch (_) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Could not attach image')));
+      } finally {
+        if (context.mounted) {
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+          isPickingAttachment.value = false;
+        }
       }
     }
 
-    void removeAttachment(String path) {
-      attachmentPaths.value = attachmentPaths.value
+    Future<void> removeAttachment(String path) async {
+      final nextPaths = attachmentPaths.value
           .where((existing) => existing != path)
           .toList();
-      final file = File(path);
-      if (file.existsSync()) {
-        file.delete().ignore();
+      attachmentPaths.value = nextPaths;
+
+      final baseNote = currentNote.value;
+      if (baseNote != null) {
+        final latest = store.notesBox.get(baseNote.id) ?? baseNote;
+        final updated = latest.copyWith(attachmentPaths: nextPaths);
+        await store.updateNote(updated);
+        currentNote.value = updated;
       }
+
+      await store.removeImageLinks(path);
+      await ImageFileStore.delete(path);
+      ref.invalidate(notesProvider);
     }
 
     return CupertinoPageScaffold(
@@ -310,7 +339,9 @@ class NoteEditorScreen extends HookConsumerWidget {
                         child: _AttachmentButton(
                           icon: CupertinoIcons.camera,
                           label: 'Camera',
-                          onPressed: () => addAttachment(ImageSource.camera),
+                          onPressed: isPickingAttachment.value
+                              ? null
+                              : () => addAttachment(ImageSource.camera),
                         ),
                       ),
                       const SizedBox(width: 10),
@@ -318,7 +349,9 @@ class NoteEditorScreen extends HookConsumerWidget {
                         child: _AttachmentButton(
                           icon: CupertinoIcons.photo,
                           label: 'Image',
-                          onPressed: () => addAttachment(ImageSource.gallery),
+                          onPressed: isPickingAttachment.value
+                              ? null
+                              : () => addAttachment(ImageSource.gallery),
                         ),
                       ),
                     ],
@@ -755,7 +788,7 @@ class _ColorTagPicker extends StatelessWidget {
 class _AttachmentButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   const _AttachmentButton({
     required this.icon,
@@ -766,6 +799,8 @@ class _AttachmentButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final enabled = onPressed != null;
+    final foreground = enabled ? colors.accent : colors.textSecondary;
     return SizedBox(
       height: 44,
       child: CupertinoButton(
@@ -774,19 +809,25 @@ class _AttachmentButton extends StatelessWidget {
         child: Container(
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: colors.accent.withValues(alpha: 0.1),
+            color: enabled
+                ? colors.accent.withValues(alpha: 0.1)
+                : colors.cardAlt.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: colors.accent.withValues(alpha: 0.25)),
+            border: Border.all(
+              color: enabled
+                  ? colors.accent.withValues(alpha: 0.25)
+                  : colors.divider,
+            ),
           ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, color: colors.accent, size: 20),
+              Icon(icon, color: foreground, size: 20),
               const SizedBox(width: 8),
               Text(
                 label,
                 style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: colors.accent,
+                  color: foreground,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -832,7 +873,7 @@ class _AttachmentGrid extends StatelessWidget {
                         child: ClipRRect(
                           borderRadius: BorderRadius.circular(12),
                           child: Image.file(
-                            File(path),
+                            ImageFileStore.resolve(path),
                             fit: BoxFit.cover,
                             errorBuilder: (_, _, _) => Container(
                               color: colors.cardAlt,
@@ -914,6 +955,44 @@ class _SimpleStoreFacade {
   }
 
   Future<void> deleteAllNotes() async => notesBox.clear();
+
+  Future<void> removeImageLinks(String imagePath) async {
+    final now = DateTime.now();
+    for (final note in notesBox.values.toList()) {
+      if (note.isImageCrossReference &&
+          note.crossReferenceImagePath != null &&
+          _sameImagePath(note.crossReferenceImagePath!, imagePath)) {
+        await notesBox.put(
+          note.id,
+          note.copyWith(
+            attachmentPaths: const [],
+            deletedAt: now,
+            orderIndex: 0,
+          ),
+        );
+        continue;
+      }
+
+      final nextAttachments = note.attachmentPaths
+          .where((path) => !_sameImagePath(path, imagePath))
+          .toList();
+      if (nextAttachments.length != note.attachmentPaths.length) {
+        await notesBox.put(
+          note.id,
+          note.copyWith(attachmentPaths: nextAttachments),
+        );
+      }
+    }
+  }
+
+  bool _sameImagePath(String left, String right) {
+    if (left == right) return true;
+    final leftFile = ImageFileStore.resolve(left);
+    final rightFile = ImageFileStore.resolve(right);
+    if (leftFile.path == rightFile.path) return true;
+    return ImageFileStore.canonicalStoredPath(left) ==
+        ImageFileStore.canonicalStoredPath(right);
+  }
 
   List<Note> getAllNotesSorted() {
     final l = notesBox.values.where((note) => note.isVisibleBoardNote).toList();

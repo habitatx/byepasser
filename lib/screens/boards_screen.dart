@@ -1,17 +1,15 @@
-import 'dart:io';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:hive/hive.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 
 import '../models/app_settings.dart';
 import '../models/board.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
+import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import 'image_annotator_screen.dart';
 
@@ -31,6 +29,14 @@ class BoardsScreen extends HookConsumerWidget {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final picker = useMemoized(ImagePicker.new);
     final store = useMemoized(_BoardsStoreFacade.new);
+    final pendingBoardId = useState(selectedBoard.id);
+
+    useEffect(() {
+      if (boards.every((board) => board.id != pendingBoardId.value)) {
+        pendingBoardId.value = selectedBoard.id;
+      }
+      return null;
+    }, [boards, selectedBoard.id]);
 
     Future<void> addBoard() async {
       final board = Board.create(orderIndex: boards.length);
@@ -38,6 +44,7 @@ class BoardsScreen extends HookConsumerWidget {
       await store.updateSettings(
         store.settings.copyWith(selectedBoardId: board.id),
       );
+      pendingBoardId.value = board.id;
       ref.invalidate(boardsProvider);
       ref.invalidate(settingsProvider);
     }
@@ -68,6 +75,10 @@ class BoardsScreen extends HookConsumerWidget {
       }
     }
 
+    void highlightBoard(Board board) {
+      pendingBoardId.value = board.id;
+    }
+
     Future<void> swapBoards(Board source, Board target) async {
       if (source.id == target.id) return;
       await store.updateBoard(source.copyWith(orderIndex: target.orderIndex));
@@ -88,20 +99,14 @@ class BoardsScreen extends HookConsumerWidget {
     Future<void> pickImage(Board board) async {
       final picked = await picker.pickImage(source: ImageSource.gallery);
       if (picked == null) return;
-      final docs = await getApplicationDocumentsDirectory();
-      final targetDir = Directory('${docs.path}/board_faces');
-      if (!targetDir.existsSync()) {
-        await targetDir.create(recursive: true);
-      }
-      final extension = picked.path.split('.').last;
-      final target = File(
-        '${targetDir.path}/${board.id}_${DateTime.now().millisecondsSinceEpoch}.$extension',
+      final savedPath = await ImageFileStore.saveBoardFace(
+        board.id,
+        picked.path,
       );
-      final saved = await File(picked.path).copy(target.path);
-      await store.updateBoard(board.copyWith(imagePath: saved.path));
+      await store.updateBoard(board.copyWith(imagePath: savedPath));
       ref.invalidate(boardsProvider);
       if (!context.mounted) return;
-      final annotated = await openImageAnnotator(context, saved.path);
+      final annotated = await openImageAnnotator(context, savedPath);
       if (annotated) {
         ref.invalidate(boardsProvider);
         ref.invalidate(notesProvider);
@@ -119,9 +124,10 @@ class BoardsScreen extends HookConsumerWidget {
         transitionBetweenRoutes: false,
         middle: const Text('Boards'),
         trailing: CupertinoButton(
+          minimumSize: const Size.square(44),
           padding: EdgeInsets.zero,
           onPressed: addBoard,
-          child: Icon(CupertinoIcons.plus, color: colors.accent),
+          child: Icon(CupertinoIcons.plus, color: colors.accent, size: 26),
         ),
       ),
       child: SafeArea(
@@ -132,10 +138,10 @@ class BoardsScreen extends HookConsumerWidget {
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 12,
-                childAspectRatio: 0.64,
+                crossAxisCount: 1,
+                crossAxisSpacing: 0,
+                mainAxisSpacing: 14,
+                childAspectRatio: 16 / 9,
               ),
               itemCount: boards.length,
               itemBuilder: (context, index) {
@@ -148,13 +154,14 @@ class BoardsScreen extends HookConsumerWidget {
                     feedback: Material(
                       color: Colors.transparent,
                       child: SizedBox(
-                        width: 110,
+                        width: 280,
                         child: _BoardTile(
                           board: board,
                           messageCount: countsByBoard[board.id] ?? 0,
-                          isSelected: selectedBoard.id == board.id,
+                          isSelected: pendingBoardId.value == board.id,
                           canDelete: false,
-                          onSelect: () {},
+                          onHighlight: () {},
+                          onCommitSelect: () {},
                           onDelete: () {},
                           onTitleChanged: (_) {},
                           onColorSelected: (_) {},
@@ -169,9 +176,10 @@ class BoardsScreen extends HookConsumerWidget {
                       child: _BoardTile(
                         board: board,
                         messageCount: countsByBoard[board.id] ?? 0,
-                        isSelected: selectedBoard.id == board.id,
+                        isSelected: pendingBoardId.value == board.id,
                         canDelete: boards.length > 1,
-                        onSelect: () => selectBoard(board),
+                        onHighlight: () => highlightBoard(board),
+                        onCommitSelect: () => selectBoard(board),
                         onDelete: () => deleteBoard(board),
                         onTitleChanged: (title) => updateTitle(board, title),
                         onColorSelected: (color) => updateColor(board, color),
@@ -194,9 +202,10 @@ class BoardsScreen extends HookConsumerWidget {
                     child: _BoardTile(
                       board: board,
                       messageCount: countsByBoard[board.id] ?? 0,
-                      isSelected: selectedBoard.id == board.id,
+                      isSelected: pendingBoardId.value == board.id,
                       canDelete: boards.length > 1,
-                      onSelect: () => selectBoard(board),
+                      onHighlight: () => highlightBoard(board),
+                      onCommitSelect: () => selectBoard(board),
                       onDelete: () => deleteBoard(board),
                       onTitleChanged: (title) => updateTitle(board, title),
                       onColorSelected: (color) => updateColor(board, color),
@@ -258,7 +267,8 @@ class _BoardTile extends StatelessWidget {
   final int messageCount;
   final bool isSelected;
   final bool canDelete;
-  final VoidCallback onSelect;
+  final VoidCallback onHighlight;
+  final VoidCallback onCommitSelect;
   final VoidCallback onDelete;
   final ValueChanged<String> onTitleChanged;
   final ValueChanged<int> onColorSelected;
@@ -271,7 +281,8 @@ class _BoardTile extends StatelessWidget {
     required this.messageCount,
     required this.isSelected,
     required this.canDelete,
-    required this.onSelect,
+    required this.onHighlight,
+    required this.onCommitSelect,
     required this.onDelete,
     required this.onTitleChanged,
     required this.onColorSelected,
@@ -292,7 +303,7 @@ class _BoardTile extends StatelessWidget {
           children: [
             Expanded(
               child: GestureDetector(
-                onTap: onSelect,
+                onTap: onHighlight,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -302,24 +313,24 @@ class _BoardTile extends StatelessWidget {
                       onAnnotateImage: onAnnotateImage,
                     ),
                     Positioned(
-                      top: 6,
-                      right: 6,
+                      top: 8,
+                      right: 8,
                       child: _TinyIconButton(
                         icon: isSelected
                             ? CupertinoIcons.checkmark_alt_circle_fill
                             : CupertinoIcons.circle,
                         color: isSelected ? colors.accent : Colors.white,
-                        onPressed: onSelect,
+                        onPressed: onCommitSelect,
                       ),
                     ),
                     Positioned(
-                      top: 6,
-                      left: 6,
+                      top: 8,
+                      left: 8,
                       child: _BoardCountBadge(count: messageCount),
                     ),
                     Positioned(
-                      left: 6,
-                      bottom: 6,
+                      left: 8,
+                      bottom: 8,
                       child: Row(
                         children: [
                           _TinyIconButton(
@@ -355,7 +366,7 @@ class _BoardTile extends StatelessWidget {
                       selected: i == 0 && board.imagePath == null,
                       onTap: () => onColorSelected((board.colorTag + i) % 8),
                     ),
-                    const SizedBox(width: 3),
+                    const SizedBox(width: 6),
                   ],
                   _BoardImageSwatch(
                     selected: board.imagePath != null,
@@ -393,10 +404,13 @@ class _BoardFace extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final imagePath = board.imagePath;
-    if (imagePath != null && File(imagePath).existsSync()) {
+    final imageFile = imagePath == null
+        ? null
+        : ImageFileStore.resolve(imagePath);
+    if (imageFile != null && imageFile.existsSync()) {
       return GestureDetector(
         onTap: onAnnotateImage,
-        child: Image.file(File(imagePath), fit: BoxFit.cover),
+        child: Image.file(imageFile, fit: BoxFit.cover),
       );
     }
     return DecoratedBox(
@@ -421,9 +435,9 @@ class _BoardCountBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final label = count > 99 ? '99+' : '$count';
     return Container(
-      constraints: const BoxConstraints(minWidth: 24),
-      height: 24,
-      padding: const EdgeInsets.symmetric(horizontal: 7),
+      constraints: const BoxConstraints(minWidth: 34),
+      height: 34,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
       alignment: Alignment.center,
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.48),
@@ -434,9 +448,11 @@ class _BoardCountBadge extends StatelessWidget {
         label,
         style: const TextStyle(
           color: Colors.white,
-          fontSize: 11,
+          fontSize: 14,
           fontWeight: FontWeight.w800,
           height: 1,
+          decoration: TextDecoration.none,
+          decorationColor: Colors.transparent,
         ),
       ),
     );
@@ -467,8 +483,8 @@ class _BoardTitleField extends HookWidget {
       textAlign: TextAlign.center,
       maxLines: 1,
       maxLength: maxBoardTitleLength,
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
-      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+      style: Theme.of(context).textTheme.labelLarge?.copyWith(
         color: colors.textPrimary,
         fontWeight: FontWeight.w700,
       ),
@@ -503,16 +519,22 @@ class _BoardColorDot extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Container(
-        width: 14,
-        height: 14,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-          border: Border.all(
-            color: selected ? colors.textPrimary : colors.divider,
-            width: selected ? 2 : 1,
+      child: SizedBox.square(
+        dimension: 34,
+        child: Center(
+          child: Container(
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: selected ? colors.textPrimary : colors.divider,
+                width: selected ? 2.5 : 1,
+              ),
+            ),
           ),
         ),
       ),
@@ -530,22 +552,28 @@ class _BoardImageSwatch extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     return GestureDetector(
+      behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Container(
-        width: 18,
-        height: 18,
-        decoration: BoxDecoration(
-          color: colors.cardAlt,
-          borderRadius: BorderRadius.circular(5),
-          border: Border.all(
-            color: selected ? colors.textPrimary : colors.divider,
-            width: selected ? 2 : 1,
+      child: SizedBox.square(
+        dimension: 38,
+        child: Center(
+          child: Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              color: colors.cardAlt,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: selected ? colors.textPrimary : colors.divider,
+                width: selected ? 2.5 : 1,
+              ),
+            ),
+            child: Icon(
+              CupertinoIcons.photo,
+              size: 17,
+              color: selected ? colors.accent : colors.textSecondary,
+            ),
           ),
-        ),
-        child: Icon(
-          CupertinoIcons.photo,
-          size: 12,
-          color: selected ? colors.accent : colors.textSecondary,
         ),
       ),
     );
@@ -566,12 +594,16 @@ class _TinyIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox.square(
-      dimension: 24,
+      dimension: 40,
       child: IconButton(
         onPressed: onPressed,
         padding: EdgeInsets.zero,
-        iconSize: 16,
+        iconSize: 22,
         color: color,
+        style: IconButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size.square(40),
+        ),
         icon: Icon(icon),
       ),
     );

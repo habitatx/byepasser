@@ -1,16 +1,16 @@
-import 'dart:io';
-
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../models/app_settings.dart';
 import '../models/board.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
 import '../services/haptics_service.dart';
+import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import '../widgets/centered_page_route.dart';
 import '../widgets/countdown_text.dart';
@@ -23,6 +23,8 @@ const double _kBoardCollapsedCardHeight = 92;
 const int _kBoardMaxIndentLevel = 1;
 const double _kBoardIndentWidth = 36;
 
+enum _BoardOrderMode { stored, time }
+
 /// Home now behaves like the Statusgy item-detail personal notes tab:
 /// a private board with header controls, reorderable cards, quick note creation,
 /// explicit indent/outdent controls, and card minimizing.
@@ -34,13 +36,28 @@ class HomeScreen extends HookConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final cardsMinimized = useState(false);
+    final orderMode = useState(_BoardOrderMode.stored);
 
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final selectedBoard = ref.watch(selectedBoardProvider);
     final boards = ref.watch(boardsProvider);
-    final orderedNotes = recycleBin
+    final insertAfterNoteId = ref.watch(boardInsertAfterNoteIdProvider);
+    final storedNotes = recycleBin
         ? ref.watch(recycledNotesProvider)
         : ref.watch(currentBoardNotesProvider);
+    final orderedNotes = useMemoized(() {
+      final list = List<Note>.from(storedNotes);
+      if (!recycleBin && orderMode.value == _BoardOrderMode.time) {
+        list.sort((a, b) {
+          final expiryCompare = a.compareExpiry(b);
+          if (expiryCompare != 0) return expiryCompare;
+          return a.orderIndex.compareTo(b.orderIndex);
+        });
+      }
+      return list;
+    }, [storedNotes, recycleBin, orderMode.value]);
+    final preserveIndents =
+        recycleBin || orderMode.value == _BoardOrderMode.stored;
 
     final store = useMemoized(() => _getOrCreateStore(), const []);
     final haptics = ref.read(hapticsProvider);
@@ -62,6 +79,7 @@ class HomeScreen extends HookConsumerWidget {
               : CupertinoIcons.square_stack_3d_up,
           count: orderedNotes.length,
           isMinimized: cardsMinimized.value,
+          isTimeSorted: !recycleBin && orderMode.value == _BoardOrderMode.time,
           onOpenBoards: recycleBin
               ? () => _discardCompletedTasks(
                   context,
@@ -82,6 +100,16 @@ class HomeScreen extends HookConsumerWidget {
               ? null
               : () async {
                   cardsMinimized.value = !cardsMinimized.value;
+                  await haptics.selection();
+                },
+          onToggleOrder: recycleBin
+              ? null
+              : () async {
+                  orderMode.value = orderMode.value == _BoardOrderMode.stored
+                      ? _BoardOrderMode.time
+                      : _BoardOrderMode.stored;
+                  ref.read(boardInsertAfterNoteIdProvider.notifier).state =
+                      null;
                   await haptics.selection();
                 },
         ),
@@ -108,6 +136,11 @@ class HomeScreen extends HookConsumerWidget {
                 notes: orderedNotes,
                 recycleBin: recycleBin,
                 isMinimized: cardsMinimized.value,
+                preserveIndents: preserveIndents,
+                canReorder: preserveIndents,
+                selectedInsertAfterNoteId: preserveIndents && !recycleBin
+                    ? insertAfterNoteId
+                    : null,
                 canMoveNotes: !recycleBin && boards.length > 1,
                 onReorder: (oldIndex, newIndex) => _onReorder(
                   ref,
@@ -118,9 +151,31 @@ class HomeScreen extends HookConsumerWidget {
                   haptics,
                 ),
                 onTapNote: (note) => _openNoteForEdit(context, note, ref),
+                onSelectTopInsert: preserveIndents && !recycleBin
+                    ? () async {
+                        ref
+                                .read(boardInsertAfterNoteIdProvider.notifier)
+                                .state =
+                            null;
+                        await haptics.selection();
+                      }
+                    : null,
+                onToggleInsertAfterNote: preserveIndents && !recycleBin
+                    ? (note) async {
+                        final notifier = ref.read(
+                          boardInsertAfterNoteIdProvider.notifier,
+                        );
+                        notifier.state = notifier.state == note.id
+                            ? null
+                            : note.id;
+                        await haptics.selection();
+                      }
+                    : null,
                 onDeleteNote: (note) => _deleteNote(ref, store, note, haptics),
                 onRestoreNote: (note) =>
                     _restoreNote(ref, store, note, selectedBoard.id, haptics),
+                onDiscardNote: (note) =>
+                    _discardRecycledNote(ref, store, note, haptics),
                 onMoveNote: (note) async {
                   final target = await _showMoveToBoardSelector(
                     context,
@@ -142,8 +197,10 @@ class HomeScreen extends HookConsumerWidget {
                   ref.invalidate(notesProvider);
                   ref.invalidate(boardsProvider);
                 },
-                onIndentNote: (note, delta) =>
-                    _adjustIndent(ref, store, note, delta, haptics),
+                onIndentNote: preserveIndents
+                    ? (note, delta) =>
+                          _adjustIndent(ref, store, note, delta, haptics)
+                    : null,
               ),
           ],
         ),
@@ -239,6 +296,17 @@ class HomeScreen extends HookConsumerWidget {
     await haptics.medium();
   }
 
+  Future<void> _discardRecycledNote(
+    WidgetRef ref,
+    _SimpleStoreFacade store,
+    Note note,
+    HapticsService haptics,
+  ) async {
+    await store.discardRecycledNote(note.id);
+    ref.invalidate(notesProvider);
+    await haptics.medium();
+  }
+
   Future<void> _openNoteForEdit(
     BuildContext context,
     Note note,
@@ -268,16 +336,20 @@ class _BoardCapsuleTitle extends StatelessWidget {
   final IconData icon;
   final int count;
   final bool isMinimized;
+  final bool isTimeSorted;
   final VoidCallback? onOpenBoards;
   final VoidCallback? onToggleMinimized;
+  final VoidCallback? onToggleOrder;
 
   const _BoardCapsuleTitle({
     required this.title,
     required this.icon,
     required this.count,
     required this.isMinimized,
+    required this.isTimeSorted,
     required this.onOpenBoards,
     required this.onToggleMinimized,
+    required this.onToggleOrder,
   });
 
   @override
@@ -286,16 +358,16 @@ class _BoardCapsuleTitle extends StatelessWidget {
     return GestureDetector(
       onTap: onOpenBoards,
       child: Container(
-        height: 36,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
+        height: 44,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
         decoration: colors.cardDecoration(color: colors.card, radius: 999),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 17, color: colors.accent),
-            const SizedBox(width: 7),
+            Icon(icon, size: 19, color: colors.accent),
+            const SizedBox(width: 8),
             ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 112),
+              constraints: const BoxConstraints(maxWidth: 128),
               child: Text(
                 title.trim().isEmpty ? 'Board' : title.trim(),
                 maxLines: 1,
@@ -306,7 +378,7 @@ class _BoardCapsuleTitle extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(width: 7),
+            const SizedBox(width: 8),
             Text(
               '$count${isMinimized && count > 0 ? ' min' : ''}',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -314,7 +386,20 @@ class _BoardCapsuleTitle extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-            const SizedBox(width: 5),
+            if (onToggleOrder != null) ...[
+              const SizedBox(width: 8),
+              _CapsuleIconButton(
+                tooltip: isTimeSorted
+                    ? 'Sort by stored order'
+                    : 'Sort by expiry time',
+                onPressed: onToggleOrder,
+                icon: isTimeSorted
+                    ? CupertinoIcons.clock
+                    : CupertinoIcons.line_horizontal_3_decrease,
+              ),
+              const SizedBox(width: 4),
+            ] else
+              const SizedBox(width: 8),
             _CapsuleIconButton(
               tooltip: isMinimized
                   ? 'Expand board cards'
@@ -345,16 +430,21 @@ class _CapsuleIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
-    return SizedBox.square(
-      dimension: 28,
+    return SizedBox(
+      width: 42,
+      height: 34,
       child: IconButton(
         tooltip: tooltip,
         onPressed: onPressed,
         padding: EdgeInsets.zero,
-        iconSize: 16,
+        iconSize: 18,
         color: onPressed == null
             ? colors.textSecondary.withValues(alpha: 0.35)
             : colors.accent,
+        style: IconButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size(42, 34),
+        ),
         icon: Icon(icon),
       ),
     );
@@ -481,117 +571,183 @@ class _BoardNoteList extends StatelessWidget {
   final List<Note> notes;
   final bool recycleBin;
   final bool isMinimized;
+  final bool preserveIndents;
+  final bool canReorder;
+  final String? selectedInsertAfterNoteId;
   final bool canMoveNotes;
   final void Function(int oldIndex, int newIndex) onReorder;
   final ValueChanged<Note> onTapNote;
+  final VoidCallback? onSelectTopInsert;
+  final ValueChanged<Note>? onToggleInsertAfterNote;
   final ValueChanged<Note> onDeleteNote;
   final ValueChanged<Note> onRestoreNote;
+  final ValueChanged<Note> onDiscardNote;
   final ValueChanged<Note> onMoveNote;
-  final void Function(Note note, int delta) onIndentNote;
+  final void Function(Note note, int delta)? onIndentNote;
 
   const _BoardNoteList({
     required this.notes,
     required this.recycleBin,
     required this.isMinimized,
+    required this.preserveIndents,
+    required this.canReorder,
+    required this.selectedInsertAfterNoteId,
     required this.canMoveNotes,
     required this.onReorder,
     required this.onTapNote,
+    required this.onSelectTopInsert,
+    required this.onToggleInsertAfterNote,
     required this.onDeleteNote,
     required this.onRestoreNote,
+    required this.onDiscardNote,
     required this.onMoveNote,
     required this.onIndentNote,
   });
 
   @override
   Widget build(BuildContext context) {
-    return ReorderableListView.builder(
-      key: PageStorageKey(
-        recycleBin
-            ? 'byepasser-recycle-card-list'
-            : 'byepasser-board-card-list',
-      ),
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: EdgeInsets.zero,
-      buildDefaultDragHandles: false,
-      itemCount: notes.length,
-      onReorder: onReorder,
-      proxyDecorator: (child, index, animation) {
-        return AnimatedBuilder(
-          animation: animation,
-          builder: (context, child) {
-            final lift = Curves.easeOut.transform(animation.value);
-            return Transform.scale(
-              scale: 1 + lift * 0.02,
-              child: Material(
-                color: Colors.transparent,
-                elevation: 10 * lift,
-                borderRadius: BorderRadius.circular(18),
-                child: child,
+    final showInsertBars =
+        !recycleBin &&
+        onSelectTopInsert != null &&
+        onToggleInsertAfterNote != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (showInsertBars)
+          _BoardInsertRail(
+            selected:
+                onSelectTopInsert != null && selectedInsertAfterNoteId == null,
+            enabled: onSelectTopInsert != null,
+            onTap: onSelectTopInsert,
+          ),
+        ReorderableListView.builder(
+          key: PageStorageKey(
+            recycleBin
+                ? 'byepasser-recycle-card-list'
+                : 'byepasser-board-card-list',
+          ),
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          buildDefaultDragHandles: false,
+          itemCount: notes.length,
+          onReorder: canReorder ? onReorder : (_, _) {},
+          proxyDecorator: (child, index, animation) {
+            return AnimatedBuilder(
+              animation: animation,
+              builder: (context, child) {
+                final lift = Curves.easeOut.transform(animation.value);
+                return Transform.scale(
+                  scale: 1 + lift * 0.02,
+                  child: Material(
+                    color: Colors.transparent,
+                    elevation: 10 * lift,
+                    borderRadius: BorderRadius.circular(18),
+                    child: child,
+                  ),
+                );
+              },
+              child: child,
+            );
+          },
+          itemBuilder: (context, index) {
+            final note = notes[index];
+            final indentLevel = preserveIndents
+                ? note.indentLevel.clamp(0, _kBoardMaxIndentLevel).toInt()
+                : 0;
+            final indentOffset = indentLevel * _kBoardIndentWidth;
+            return Dismissible(
+              key: ValueKey('board-note-${note.id}'),
+              direction: recycleBin
+                  ? DismissDirection.horizontal
+                  : DismissDirection.endToStart,
+              confirmDismiss: (_) => recycleBin
+                  ? Future.value(true)
+                  : _confirmDeleteNote(context, note),
+              onDismissed: (direction) {
+                if (!recycleBin) {
+                  onDeleteNote(note);
+                  return;
+                }
+                if (direction == DismissDirection.startToEnd) {
+                  onRestoreNote(note);
+                } else {
+                  onDiscardNote(note);
+                }
+              },
+              background: recycleBin
+                  ? _SwipeRestoreBackground(
+                      isLast: index == notes.length - 1,
+                      leftInset: indentOffset,
+                    )
+                  : const SizedBox.shrink(),
+              secondaryBackground: recycleBin
+                  ? _SwipeDiscardBackground(
+                      isLast: index == notes.length - 1,
+                      leftInset: indentOffset,
+                    )
+                  : _SwipeDeleteBackground(
+                      isLast: index == notes.length - 1,
+                      leftInset: indentOffset,
+                    ),
+              child: Padding(
+                padding: EdgeInsets.only(
+                  left: indentOffset,
+                  bottom: index == notes.length - 1 ? 0 : 10,
+                ),
+                child: _MaybeReorderableCard(
+                  index: index,
+                  enabled: canReorder,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _BoardNoteCard(
+                        note: note,
+                        isMinimized: isMinimized,
+                        onTap: () => onTapNote(note),
+                        onMove: canMoveNotes ? () => onMoveNote(note) : null,
+                        onOutdent: onIndentNote == null || indentLevel <= 0
+                            ? null
+                            : () => onIndentNote!(note, -1),
+                        onIndent:
+                            onIndentNote == null ||
+                                indentLevel >= _kBoardMaxIndentLevel
+                            ? null
+                            : () => onIndentNote!(note, 1),
+                      ),
+                      if (showInsertBars)
+                        _BoardInsertRail(
+                          selected: selectedInsertAfterNoteId == note.id,
+                          enabled: true,
+                          onTap: () => onToggleInsertAfterNote!(note),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             );
           },
-          child: child,
-        );
-      },
-      itemBuilder: (context, index) {
-        final note = notes[index];
-        final indentLevel = note.indentLevel
-            .clamp(0, _kBoardMaxIndentLevel)
-            .toInt();
-        final indentOffset = indentLevel * _kBoardIndentWidth;
-        return Dismissible(
-          key: ValueKey('board-note-${note.id}'),
-          direction: recycleBin
-              ? DismissDirection.startToEnd
-              : DismissDirection.endToStart,
-          confirmDismiss: (_) => recycleBin
-              ? Future.value(true)
-              : _confirmDeleteNote(context, note),
-          onDismissed: (_) =>
-              recycleBin ? onRestoreNote(note) : onDeleteNote(note),
-          background: recycleBin
-              ? _SwipeRestoreBackground(
-                  isLast: index == notes.length - 1,
-                  leftInset: indentOffset,
-                )
-              : const SizedBox.shrink(),
-          secondaryBackground: _SwipeDeleteBackground(
-            isLast: index == notes.length - 1,
-            leftInset: indentOffset,
-          ),
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: indentOffset,
-              bottom: index == notes.length - 1 ? 0 : 10,
-            ),
-            child: ReorderableDelayedDragStartListener(
-              index: index,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: _BoardNoteCard(
-                      note: note,
-                      isMinimized: isMinimized,
-                      onTap: () => onTapNote(note),
-                      onDelete: recycleBin ? null : () => onDeleteNote(note),
-                      onMove: canMoveNotes ? () => onMoveNote(note) : null,
-                      onOutdent: indentLevel <= 0
-                          ? null
-                          : () => onIndentNote(note, -1),
-                      onIndent: indentLevel >= _kBoardMaxIndentLevel
-                          ? null
-                          : () => onIndentNote(note, 1),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-      },
+        ),
+      ],
     );
+  }
+}
+
+class _MaybeReorderableCard extends StatelessWidget {
+  final int index;
+  final bool enabled;
+  final Widget child;
+
+  const _MaybeReorderableCard({
+    required this.index,
+    required this.enabled,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (!enabled) return child;
+    return ReorderableDelayedDragStartListener(index: index, child: child);
   }
 }
 
@@ -658,11 +814,130 @@ class _SwipeRestoreBackground extends StatelessWidget {
   }
 }
 
+class _SwipeDiscardBackground extends StatelessWidget {
+  final bool isLast;
+  final double leftInset;
+
+  const _SwipeDiscardBackground({
+    required this.isLast,
+    required this.leftInset,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    return Padding(
+      padding: EdgeInsets.only(left: leftInset, bottom: isLast ? 0 : 10),
+      child: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 22),
+        decoration: BoxDecoration(
+          color: colors.danger.withValues(alpha: 0.9),
+          borderRadius: BorderRadius.circular(
+            colors.cardStyle == CardStyles.minimal ? 10 : 18,
+          ),
+        ),
+        child: const Icon(
+          CupertinoIcons.trash_fill,
+          color: Colors.white,
+          size: 24,
+        ),
+      ),
+    );
+  }
+}
+
+class _BoardInsertRail extends StatelessWidget {
+  final bool selected;
+  final bool enabled;
+  final VoidCallback? onTap;
+
+  const _BoardInsertRail({
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final activeColor = selected ? colors.accent : colors.textSecondary;
+    return Tooltip(
+      message: selected ? 'Clear insert point' : 'Insert after this note',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: enabled ? onTap : null,
+        child: SizedBox(
+          height: 18,
+          width: 108,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 14),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    curve: Curves.easeOut,
+                    width: 60,
+                    height: selected ? 7 : 5,
+                    decoration: BoxDecoration(
+                      color: activeColor.withValues(
+                        alpha: selected ? 0.95 : (enabled ? 0.28 : 0.12),
+                      ),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: selected
+                            ? colors.card.withValues(alpha: 0.9)
+                            : colors.textSecondary.withValues(alpha: 0.16),
+                        width: selected ? 2 : 1,
+                      ),
+                      boxShadow: selected
+                          ? [
+                              BoxShadow(
+                                color: colors.accent.withValues(alpha: 0.28),
+                                blurRadius: 10,
+                                offset: const Offset(0, 3),
+                              ),
+                            ]
+                          : const [],
+                    ),
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 120),
+                    child: selected
+                        ? Padding(
+                            key: const ValueKey('insert-label'),
+                            padding: const EdgeInsets.only(left: 5),
+                            child: Text(
+                              'insert',
+                              style: Theme.of(context).textTheme.labelSmall
+                                  ?.copyWith(
+                                    color: colors.accent,
+                                    fontSize: 10.5,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
+                          )
+                        : const SizedBox.shrink(
+                            key: ValueKey('insert-label-empty'),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BoardNoteCard extends StatelessWidget {
   final Note note;
   final bool isMinimized;
   final VoidCallback onTap;
-  final VoidCallback? onDelete;
   final VoidCallback? onMove;
   final VoidCallback? onOutdent;
   final VoidCallback? onIndent;
@@ -671,7 +946,6 @@ class _BoardNoteCard extends StatelessWidget {
     required this.note,
     required this.isMinimized,
     required this.onTap,
-    required this.onDelete,
     required this.onMove,
     required this.onOutdent,
     required this.onIndent,
@@ -718,8 +992,11 @@ class _BoardNoteCard extends StatelessWidget {
                                 horizontal: 10,
                               ),
                               decoration: BoxDecoration(
-                                color: accent.withValues(alpha: 0.08),
+                                color: accent.withValues(alpha: 0.14),
                                 borderRadius: BorderRadius.circular(999),
+                                border: Border.all(
+                                  color: accent.withValues(alpha: 0.34),
+                                ),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
@@ -727,13 +1004,13 @@ class _BoardNoteCard extends StatelessWidget {
                                   Icon(
                                     note.isSteamMode
                                         ? CupertinoIcons.wind
-                                        : CupertinoIcons.square_list,
+                                        : CupertinoIcons.text_bubble,
                                     size: 16,
                                     color: accent,
                                   ),
                                   const SizedBox(width: 6),
                                   Text(
-                                    note.isSteamMode ? 'Puff' : 'Note',
+                                    note.isSteamMode ? 'Puff' : 'Hum',
                                     style: theme.textTheme.labelMedium
                                         ?.copyWith(
                                           color: accent,
@@ -753,25 +1030,24 @@ class _BoardNoteCard extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            _BoardCardActionButton(
-                              tooltip: 'Outdent',
-                              icon: CupertinoIcons.decrease_indent,
-                              onPressed: onOutdent,
-                            ),
-                            _BoardCardActionButton(
-                              tooltip: 'Indent',
-                              icon: CupertinoIcons.increase_indent,
-                              onPressed: onIndent,
-                            ),
-                            _BoardCardActionButton(
-                              tooltip: 'Move to board',
-                              icon: CupertinoIcons.square_stack_3d_up,
-                              onPressed: onMove,
-                            ),
-                            _BoardCardActionButton(
-                              tooltip: 'Complete',
-                              icon: CupertinoIcons.check_mark_circled,
-                              onPressed: onDelete,
+                            _BoardCardActionCapsule(
+                              actions: [
+                                _BoardCardAction(
+                                  tooltip: 'Outdent',
+                                  icon: CupertinoIcons.decrease_indent,
+                                  onPressed: onOutdent,
+                                ),
+                                _BoardCardAction(
+                                  tooltip: 'Indent',
+                                  icon: CupertinoIcons.increase_indent,
+                                  onPressed: onIndent,
+                                ),
+                                _BoardCardAction(
+                                  tooltip: 'Move to board',
+                                  icon: CupertinoIcons.square_stack_3d_up,
+                                  onPressed: onMove,
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -853,6 +1129,18 @@ class _BoardNoteCard extends StatelessWidget {
                     ],
                   ),
                 ),
+                const Positioned(
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  child: _CardEdgeTapGuard(height: 10),
+                ),
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: _CardEdgeTapGuard(height: isMinimized ? 10 : 18),
+                ),
               ],
             ),
           ),
@@ -862,35 +1150,94 @@ class _BoardNoteCard extends StatelessWidget {
   }
 }
 
-class _BoardCardActionButton extends StatelessWidget {
+class _CardEdgeTapGuard extends StatelessWidget {
+  final double height;
+
+  const _CardEdgeTapGuard({required this.height});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {},
+      child: SizedBox(height: height),
+    );
+  }
+}
+
+class _BoardCardAction {
   final String tooltip;
   final IconData icon;
   final VoidCallback? onPressed;
 
-  const _BoardCardActionButton({
+  const _BoardCardAction({
     required this.tooltip,
     required this.icon,
     required this.onPressed,
   });
+}
+
+class _BoardCardActionCapsule extends StatelessWidget {
+  final List<_BoardCardAction> actions;
+
+  const _BoardCardActionCapsule({required this.actions});
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.textPrimary.withValues(alpha: colors.isDark ? 0.1 : 0.06),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: colors.textPrimary.withValues(
+            alpha: colors.isDark ? 0.2 : 0.16,
+          ),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < actions.length; i++) ...[
+            _BoardCardActionButton(action: actions[i]),
+            if (i != actions.length - 1)
+              Container(
+                width: 1,
+                height: 22,
+                color: colors.textPrimary.withValues(alpha: 0.1),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _BoardCardActionButton extends StatelessWidget {
+  final _BoardCardAction action;
+
+  const _BoardCardActionButton({required this.action});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final enabled = action.onPressed != null;
     return SizedBox.square(
-      dimension: 36,
+      dimension: 40,
       child: IconButton(
-        tooltip: tooltip,
-        onPressed: onPressed,
+        tooltip: action.tooltip,
+        onPressed: action.onPressed ?? () {},
         padding: EdgeInsets.zero,
-        iconSize: 18,
+        iconSize: 19,
         visualDensity: VisualDensity.compact,
         style: IconButton.styleFrom(
-          foregroundColor: colors.textSecondary,
-          disabledForegroundColor: colors.textSecondary.withValues(alpha: 0.28),
+          foregroundColor: enabled
+              ? colors.textPrimary.withValues(alpha: 0.78)
+              : colors.textSecondary.withValues(alpha: 0.38),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          minimumSize: const Size.square(36),
+          minimumSize: const Size.square(40),
         ),
-        icon: Icon(icon),
+        icon: Icon(action.icon),
       ),
     );
   }
@@ -1053,41 +1400,156 @@ class _BoardFirstAttachmentPreview extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final file = ImageFileStore.resolve(path);
+
+    Future<void> editImage() async {
+      final annotated = await openImageAnnotator(context, path);
+      if (annotated) {
+        ref.invalidate(notesProvider);
+      }
+    }
+
+    Future<void> shareImage() async {
+      if (!file.existsSync()) {
+        _showAttachmentMessage(context, 'Image file is missing');
+        return;
+      }
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)], subject: 'Byepasser image'),
+      );
+    }
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: GestureDetector(
-        onTap: () async {
-          final annotated = await openImageAnnotator(context, path);
-          if (annotated) {
-            ref.invalidate(notesProvider);
-          }
-        },
+        behavior: HitTestBehavior.opaque,
+        onTap: () {},
         child: AspectRatio(
           aspectRatio: 16 / 9,
-          child: _BoardAttachmentImage(path: path, colors: colors),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: _BoardAttachmentImage(
+                  path: path,
+                  colors: colors,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              Positioned(
+                bottom: 8,
+                right: 8,
+                child: _AttachmentImageActions(
+                  colors: colors,
+                  onEdit: editImage,
+                  onShare: shareImage,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _BoardAttachmentThumb extends ConsumerWidget {
+void _showAttachmentMessage(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+  );
+}
+
+class _AttachmentImageActions extends StatelessWidget {
+  final ByepasserColors colors;
+  final VoidCallback onEdit;
+  final VoidCallback onShare;
+
+  const _AttachmentImageActions({
+    required this.colors,
+    required this.onEdit,
+    required this.onShare,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.68),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.42)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.28),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _AttachmentImageActionButton(
+            tooltip: 'Edit',
+            icon: CupertinoIcons.pencil,
+            onPressed: onEdit,
+          ),
+          Container(
+            width: 1,
+            height: 20,
+            color: Colors.white.withValues(alpha: 0.22),
+          ),
+          _AttachmentImageActionButton(
+            tooltip: 'Share',
+            icon: CupertinoIcons.share,
+            onPressed: onShare,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachmentImageActionButton extends StatelessWidget {
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  const _AttachmentImageActionButton({
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: CupertinoButton(
+        onPressed: onPressed,
+        minimumSize: const Size.square(44),
+        padding: EdgeInsets.zero,
+        child: Icon(
+          icon,
+          size: 20,
+          color: Colors.white.withValues(alpha: onPressed == null ? 0.35 : 1),
+        ),
+      ),
+    );
+  }
+}
+
+class _BoardAttachmentThumb extends StatelessWidget {
   final String path;
 
   const _BoardAttachmentThumb({required this.path});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: GestureDetector(
-        onTap: () async {
-          final annotated = await openImageAnnotator(context, path);
-          if (annotated) {
-            ref.invalidate(notesProvider);
-          }
-        },
+        behavior: HitTestBehavior.opaque,
+        onTap: () {},
         child: SizedBox.square(
           dimension: 42,
           child: _BoardAttachmentImage(path: path, colors: colors),
@@ -1100,18 +1562,23 @@ class _BoardAttachmentThumb extends ConsumerWidget {
 class _BoardAttachmentImage extends StatelessWidget {
   final String path;
   final ByepasserColors colors;
+  final BoxFit fit;
 
-  const _BoardAttachmentImage({required this.path, required this.colors});
+  const _BoardAttachmentImage({
+    required this.path,
+    required this.colors,
+    this.fit = BoxFit.cover,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final file = File(path);
+    final file = ImageFileStore.resolve(path);
     if (!file.existsSync()) {
       return _BoardAttachmentFallback(colors: colors);
     }
     return Image.file(
       file,
-      fit: BoxFit.cover,
+      fit: fit,
       errorBuilder: (_, _, _) => _BoardAttachmentFallback(colors: colors),
     );
   }
@@ -1277,6 +1744,12 @@ class _SimpleStoreFacade {
     for (final note in recycled) {
       await notesBox.delete(note.id);
     }
+  }
+
+  Future<void> discardRecycledNote(String id) async {
+    final note = notesBox.get(id);
+    if (note == null || !note.isDeleted || note.isImageCrossReference) return;
+    await notesBox.delete(id);
   }
 
   Future<void> renumberCrossReferenceNotes(String imagePath) async {

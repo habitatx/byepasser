@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart';
@@ -9,7 +8,9 @@ import 'package:hive/hive.dart';
 
 import '../models/app_settings.dart';
 import '../models/note.dart';
+import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
+import '../widgets/centered_page_route.dart';
 
 enum _AnnotatorTool { marker, pins }
 
@@ -62,12 +63,12 @@ class _AnnotationPin {
 
 Future<bool> openImageAnnotator(BuildContext context, String imagePath) async {
   final result = await Navigator.of(context).push<bool>(
-    CupertinoPageRoute(
+    CenteredPageRoute(
       builder: (_) => ImageAnnotatorScreen(imagePath: imagePath),
     ),
   );
   if (result == true) {
-    await FileImage(File(imagePath)).evict();
+    await FileImage(ImageFileStore.resolve(imagePath)).evict();
   }
   return result ?? false;
 }
@@ -93,7 +94,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
     Color(0xffffffff),
   ];
 
-  _AnnotatorTool _tool = _AnnotatorTool.marker;
+  _AnnotatorTool _tool = _AnnotatorTool.pins;
   Color _color = const Color(0xffe8775f);
   List<_AnnotationStroke> _strokes = const [];
   List<_AnnotationPoint>? _activeStroke;
@@ -143,12 +144,12 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
                   height: imageHeight,
                   child: Padding(
                     padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-                    child: RepaintBoundary(
-                      key: _exportKey,
-                      child: Container(
-                        decoration: colors.cardDecoration(radius: 18),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(18),
+                    child: Container(
+                      decoration: colors.cardDecoration(radius: 18),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(18),
+                        child: RepaintBoundary(
+                          key: _exportKey,
                           child: _buildStage(colors),
                         ),
                       ),
@@ -194,7 +195,7 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
               ColoredBox(
                 color: colors.cardAlt,
                 child: Image.file(
-                  File(widget.imagePath),
+                  ImageFileStore.resolve(widget.imagePath),
                   width: width,
                   height: height,
                   fit: BoxFit.contain,
@@ -260,17 +261,17 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
           Row(
             children: [
               _ToolButton(
-                label: 'Marker',
-                icon: CupertinoIcons.pencil,
-                active: _tool == _AnnotatorTool.marker,
-                onTap: () => setState(() => _tool = _AnnotatorTool.marker),
-              ),
-              const SizedBox(width: 8),
-              _ToolButton(
                 label: 'Pins',
                 icon: CupertinoIcons.number_circle,
                 active: _tool == _AnnotatorTool.pins,
                 onTap: () => setState(() => _tool = _AnnotatorTool.pins),
+              ),
+              const SizedBox(width: 8),
+              _ToolButton(
+                label: 'Marker',
+                icon: CupertinoIcons.pencil,
+                active: _tool == _AnnotatorTool.marker,
+                onTap: () => setState(() => _tool = _AnnotatorTool.marker),
               ),
               const Spacer(),
               _IconAction(icon: CupertinoIcons.arrow_uturn_left, onTap: _undo),
@@ -620,7 +621,9 @@ class _ImageAnnotatorScreenState extends State<ImageAnnotatorScreen> {
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
       if (data == null) throw StateError('Could not encode annotation');
-      await File(widget.imagePath).writeAsBytes(data.buffer.asUint8List());
+      await ImageFileStore.resolve(
+        widget.imagePath,
+      ).writeAsBytes(data.buffer.asUint8List());
       await _syncCrossReferenceNotes();
       if (!mounted) return;
       Navigator.of(context).pop(true);

@@ -1,15 +1,19 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:flutter/services.dart';
 import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../models/app_settings.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
+import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
 
@@ -65,8 +69,12 @@ class SteamReleaseScreen extends HookConsumerWidget {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final settings = ref.watch(settingsProvider);
     final selectedBoard = ref.watch(selectedBoardProvider);
+    final insertAfterNoteId = ref.watch(boardInsertAfterNoteIdProvider);
     final haptics = ref.read(hapticsProvider);
     final store = useMemoized(() => _QuickNoteStoreFacade(), const []);
+    final picker = useMemoized(ImagePicker.new);
+    final attachmentPaths = useState<List<String>>(const []);
+    final isPickingAttachment = useState(false);
     final label = isHum ? 'Hum' : 'Puff';
     final lifetimeMinutes = useState(
       isHum ? _kHumLifetimeMinutes : _kPuffLifetimeMinutes,
@@ -74,26 +82,27 @@ class SteamReleaseScreen extends HookConsumerWidget {
 
     Future<void> releaseNote() async {
       final body = bodyController.text.trim();
-      if (body.isEmpty) return;
+      if (body.isEmpty && attachmentPaths.value.isEmpty) return;
 
-      final ordered = store.getBoardNotesSorted(selectedBoard.id);
       final note = Note.create(
         body: body,
         title: null,
         lifetimeMinutes: lifetimeMinutes.value,
         isSteamMode: !isHum,
-        orderIndex: 0,
+        attachmentPaths: attachmentPaths.value,
         boardId: selectedBoard.id,
       );
-      final next = <Note>[note, ...ordered];
-      for (var i = 0; i < next.length; i++) {
-        await store.updateNote(next[i].copyWith(orderIndex: i));
-      }
+      final inserted = await store.insertNote(
+        note,
+        boardId: selectedBoard.id,
+        afterNoteId: insertAfterNoteId,
+      );
       await ref
           .read(notificationServiceProvider)
-          .scheduleExpiryReminders(note.copyWith(orderIndex: 0), settings);
+          .scheduleExpiryReminders(inserted, settings);
       ref.invalidate(notesProvider);
       bodyController.clear();
+      attachmentPaths.value = const [];
       await haptics.success();
       if (!context.mounted) return;
       FocusScope.of(context).unfocus();
@@ -101,15 +110,6 @@ class SteamReleaseScreen extends HookConsumerWidget {
         SnackBar(
           content: Text('$label released'),
           duration: const Duration(seconds: 1),
-        ),
-      );
-    }
-
-    void showAttachmentUnavailable() {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Camera and image attachments are not wired yet.'),
-          duration: Duration(seconds: 1),
         ),
       );
     }
@@ -122,9 +122,37 @@ class SteamReleaseScreen extends HookConsumerWidget {
             isHum: isHum,
             bodyController: bodyController,
             lifetimeMinutes: lifetimeMinutes.value,
+            attachmentPaths: attachmentPaths.value,
+            isPickingAttachment: isPickingAttachment.value,
             onLifetimeChanged: (value) => lifetimeMinutes.value = value,
-            onCamera: showAttachmentUnavailable,
-            onImage: showAttachmentUnavailable,
+            onCamera: () {
+              unawaited(
+                _pickQuickComposerAttachment(
+                  context: context,
+                  ref: ref,
+                  picker: picker,
+                  source: ImageSource.camera,
+                  attachmentPaths: attachmentPaths,
+                  isPickingAttachment: isPickingAttachment,
+                ),
+              );
+            },
+            onImage: () {
+              unawaited(
+                _pickQuickComposerAttachment(
+                  context: context,
+                  ref: ref,
+                  picker: picker,
+                  source: ImageSource.gallery,
+                  attachmentPaths: attachmentPaths,
+                  isPickingAttachment: isPickingAttachment,
+                ),
+              );
+            },
+            onRemoveAttachment: (path) => _removeQuickComposerAttachment(
+              attachmentPaths: attachmentPaths,
+              path: path,
+            ),
             onRelease: releaseNote,
           ),
         ),
@@ -164,8 +192,13 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
     final bodyController = useTextEditingController();
     final settings = ref.watch(settingsProvider);
     final selectedBoard = ref.watch(selectedBoardProvider);
+    final insertAfterNoteId = ref.watch(boardInsertAfterNoteIdProvider);
     final haptics = ref.read(hapticsProvider);
     final store = useMemoized(() => _QuickNoteStoreFacade(), const []);
+    final picker = useMemoized(ImagePicker.new);
+    final attachmentPaths = useState<List<String>>(const []);
+    final isPickingAttachment = useState(false);
+    final didRelease = useRef(false);
     final lifetimeMinutes = useState(
       isHum ? _kHumLifetimeMinutes : _kPuffLifetimeMinutes,
     );
@@ -177,39 +210,40 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
       return null;
     }, [isHum]);
 
+    useEffect(() {
+      return () {
+        if (didRelease.value) return;
+        for (final path in attachmentPaths.value) {
+          unawaited(ImageFileStore.delete(path));
+        }
+      };
+    }, const []);
+
     Future<void> releaseNote() async {
       final body = bodyController.text.trim();
-      if (body.isEmpty) return;
+      if (body.isEmpty && attachmentPaths.value.isEmpty) return;
 
-      final ordered = store.getBoardNotesSorted(selectedBoard.id);
       final note = Note.create(
         body: body,
         title: null,
         lifetimeMinutes: lifetimeMinutes.value,
         isSteamMode: !isHum,
-        orderIndex: 0,
+        attachmentPaths: attachmentPaths.value,
         boardId: selectedBoard.id,
       );
-      final next = <Note>[note, ...ordered];
-      for (var i = 0; i < next.length; i++) {
-        await store.updateNote(next[i].copyWith(orderIndex: i));
-      }
+      final inserted = await store.insertNote(
+        note,
+        boardId: selectedBoard.id,
+        afterNoteId: insertAfterNoteId,
+      );
       await ref
           .read(notificationServiceProvider)
-          .scheduleExpiryReminders(note.copyWith(orderIndex: 0), settings);
+          .scheduleExpiryReminders(inserted, settings);
       ref.invalidate(notesProvider);
+      didRelease.value = true;
       await haptics.success();
       if (!context.mounted) return;
       Navigator.of(context, rootNavigator: true).pop();
-    }
-
-    void showAttachmentUnavailable() {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Camera and image attachments are not wired yet.'),
-          duration: Duration(seconds: 1),
-        ),
-      );
     }
 
     return Stack(
@@ -257,9 +291,37 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
               isHum: isHum,
               bodyController: bodyController,
               lifetimeMinutes: lifetimeMinutes.value,
+              attachmentPaths: attachmentPaths.value,
+              isPickingAttachment: isPickingAttachment.value,
               onLifetimeChanged: (value) => lifetimeMinutes.value = value,
-              onCamera: showAttachmentUnavailable,
-              onImage: showAttachmentUnavailable,
+              onCamera: () {
+                unawaited(
+                  _pickQuickComposerAttachment(
+                    context: context,
+                    ref: ref,
+                    picker: picker,
+                    source: ImageSource.camera,
+                    attachmentPaths: attachmentPaths,
+                    isPickingAttachment: isPickingAttachment,
+                  ),
+                );
+              },
+              onImage: () {
+                unawaited(
+                  _pickQuickComposerAttachment(
+                    context: context,
+                    ref: ref,
+                    picker: picker,
+                    source: ImageSource.gallery,
+                    attachmentPaths: attachmentPaths,
+                    isPickingAttachment: isPickingAttachment,
+                  ),
+                );
+              },
+              onRemoveAttachment: (path) => _removeQuickComposerAttachment(
+                attachmentPaths: attachmentPaths,
+                path: path,
+              ),
               onRelease: releaseNote,
             ),
           ),
@@ -356,22 +418,84 @@ double _composerTabHitZoneHeight(BuildContext context) {
   return 96 + MediaQuery.paddingOf(context).bottom;
 }
 
+Future<void> _pickQuickComposerAttachment({
+  required BuildContext context,
+  required WidgetRef ref,
+  required ImagePicker picker,
+  required ImageSource source,
+  required ValueNotifier<List<String>> attachmentPaths,
+  required ValueNotifier<bool> isPickingAttachment,
+}) async {
+  if (isPickingAttachment.value) return;
+  isPickingAttachment.value = true;
+  FocusManager.instance.primaryFocus?.unfocus();
+
+  try {
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    if (!context.mounted) return;
+
+    final picked = await picker.pickImage(
+      source: source,
+      imageQuality: 86,
+      maxWidth: 1800,
+      requestFullMetadata: false,
+    );
+    if (picked == null) return;
+
+    final storedPath = await ImageFileStore.saveNoteAttachment(picked.path);
+    attachmentPaths.value = [...attachmentPaths.value, storedPath];
+    await ref.read(hapticsProvider).selection();
+  } on PlatformException {
+    if (!context.mounted) return;
+    _showComposerAttachmentMessage(context, 'Could not open image picker');
+  } catch (_) {
+    if (!context.mounted) return;
+    _showComposerAttachmentMessage(context, 'Could not attach image');
+  } finally {
+    if (context.mounted) {
+      isPickingAttachment.value = false;
+    }
+  }
+}
+
+Future<void> _removeQuickComposerAttachment({
+  required ValueNotifier<List<String>> attachmentPaths,
+  required String path,
+}) async {
+  attachmentPaths.value = attachmentPaths.value
+      .where((existing) => existing != path)
+      .toList();
+  await ImageFileStore.delete(path);
+}
+
+void _showComposerAttachmentMessage(BuildContext context, String message) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(message), duration: const Duration(seconds: 1)),
+  );
+}
+
 class _FloatingComposerPanel extends StatelessWidget {
   final bool isHum;
   final TextEditingController bodyController;
   final int lifetimeMinutes;
+  final List<String> attachmentPaths;
+  final bool isPickingAttachment;
   final ValueChanged<int> onLifetimeChanged;
   final VoidCallback onCamera;
   final VoidCallback onImage;
+  final Future<void> Function(String path) onRemoveAttachment;
   final VoidCallback onRelease;
 
   const _FloatingComposerPanel({
     required this.isHum,
     required this.bodyController,
     required this.lifetimeMinutes,
+    required this.attachmentPaths,
+    required this.isPickingAttachment,
     required this.onLifetimeChanged,
     required this.onCamera,
     required this.onImage,
+    required this.onRemoveAttachment,
     required this.onRelease,
   });
 
@@ -399,7 +523,9 @@ class _FloatingComposerPanel extends StatelessWidget {
                 minLines: fieldMinLines,
                 maxLines: fieldMaxLines,
                 textCapitalization: TextCapitalization.sentences,
-                placeholder: isHum ? 'Type a hum...' : 'Type a puff...',
+                placeholder: isHum
+                    ? 'Capture an inspiration...'
+                    : 'Capture a thought...',
                 padding: const EdgeInsets.all(14),
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                   color: colors.textPrimary,
@@ -414,6 +540,13 @@ class _FloatingComposerPanel extends StatelessWidget {
                   border: Border.all(color: colors.divider),
                 ),
               ),
+              if (attachmentPaths.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _ComposerAttachmentStrip(
+                  paths: attachmentPaths,
+                  onRemove: onRemoveAttachment,
+                ),
+              ],
               const SizedBox(height: 12),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
@@ -429,13 +562,13 @@ class _FloatingComposerPanel extends StatelessWidget {
                   _ComposerIconButton(
                     tooltip: 'Camera',
                     icon: CupertinoIcons.camera,
-                    onPressed: onCamera,
+                    onPressed: isPickingAttachment ? null : onCamera,
                   ),
                   const SizedBox(width: 4),
                   _ComposerIconButton(
                     tooltip: 'Image',
                     icon: CupertinoIcons.photo,
-                    onPressed: onImage,
+                    onPressed: isPickingAttachment ? null : onImage,
                   ),
                   const Spacer(),
                   FilledButton.icon(
@@ -444,13 +577,79 @@ class _FloatingComposerPanel extends StatelessWidget {
                       isHum ? CupertinoIcons.text_bubble : CupertinoIcons.wind,
                       size: 18,
                     ),
-                    label: const Text('Release'),
+                    label: Text(isHum ? 'Hum' : 'Puff'),
                   ),
                 ],
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ComposerAttachmentStrip extends StatelessWidget {
+  final List<String> paths;
+  final Future<void> Function(String path) onRemove;
+
+  const _ComposerAttachmentStrip({required this.paths, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    return SizedBox(
+      height: 78,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        itemCount: paths.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final path = paths[index];
+          return AspectRatio(
+            aspectRatio: 1,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Image.file(
+                    ImageFileStore.resolve(path),
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => ColoredBox(
+                      color: colors.cardAlt,
+                      child: Icon(
+                        CupertinoIcons.photo,
+                        color: colors.textSecondary,
+                      ),
+                    ),
+                  ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: GestureDetector(
+                      onTap: () => unawaited(onRemove(path)),
+                      child: Container(
+                        width: 26,
+                        height: 26,
+                        decoration: BoxDecoration(
+                          color: colors.card.withValues(alpha: 0.9),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: colors.divider),
+                        ),
+                        child: Icon(
+                          CupertinoIcons.xmark,
+                          size: 15,
+                          color: colors.textPrimary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -518,7 +717,7 @@ int _nearestLifetimeStepIndex(int minutes, List<int> steps) {
 class _ComposerIconButton extends StatelessWidget {
   final String tooltip;
   final IconData icon;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
 
   const _ComposerIconButton({
     required this.tooltip,
@@ -529,13 +728,14 @@ class _ComposerIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final enabled = onPressed != null;
     return SizedBox.square(
       dimension: 40,
       child: IconButton(
         tooltip: tooltip,
         onPressed: onPressed,
         icon: Icon(icon),
-        color: colors.accent,
+        color: enabled ? colors.accent : colors.textSecondary,
         padding: EdgeInsets.zero,
       ),
     );
@@ -549,6 +749,30 @@ class _QuickNoteStoreFacade {
   Future<Note> updateNote(Note note) async {
     await notesBox.put(note.id, note);
     return note;
+  }
+
+  Future<Note> insertNote(
+    Note note, {
+    required String boardId,
+    String? afterNoteId,
+  }) async {
+    final ordered = getBoardNotesSorted(boardId);
+    final anchorIndex = afterNoteId == null
+        ? -1
+        : ordered.indexWhere((candidate) => candidate.id == afterNoteId);
+    final insertIndex = anchorIndex < 0 ? 0 : anchorIndex + 1;
+    final followingIndent = insertIndex < ordered.length
+        ? ordered[insertIndex].indentLevel
+        : 0;
+    final inserted = note.copyWith(
+      orderIndex: insertIndex,
+      indentLevel: followingIndent,
+    );
+    final next = <Note>[...ordered]..insert(insertIndex, inserted);
+    for (var i = 0; i < next.length; i++) {
+      await updateNote(next[i].copyWith(orderIndex: i));
+    }
+    return inserted.copyWith(orderIndex: insertIndex);
   }
 
   List<Note> getBoardNotesSorted(String boardId) {
