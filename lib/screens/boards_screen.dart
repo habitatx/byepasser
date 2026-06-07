@@ -51,7 +51,13 @@ class BoardsScreen extends HookConsumerWidget {
 
     Future<void> deleteBoard(Board board) async {
       if (boards.length <= 1) return;
-      await store.deleteBoard(board.id);
+      final confirmed = await _confirmDeleteBoard(context, board);
+      if (confirmed != true) return;
+      final recycledNotes = await store.deleteBoard(board.id);
+      final notifications = ref.read(notificationServiceProvider);
+      for (final note in recycledNotes) {
+        await notifications.cancelForNote(note.id);
+      }
       if (selectedBoard.id == board.id) {
         final remaining = store.getAllBoardsSorted();
         final next = remaining.isEmpty ? defaultBoardId : remaining.first.id;
@@ -262,6 +268,28 @@ class _BoardGridDropTarget extends StatelessWidget {
   }
 }
 
+Future<bool?> _confirmDeleteBoard(BuildContext context, Board board) {
+  final title = board.title.trim().isEmpty ? 'this board' : board.title.trim();
+  return showCupertinoDialog<bool>(
+    context: context,
+    builder: (dialogContext) => CupertinoAlertDialog(
+      title: const Text('Delete board?'),
+      content: Text('Notes on $title will move to Recycle.'),
+      actions: [
+        CupertinoDialogAction(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancel'),
+        ),
+        CupertinoDialogAction(
+          isDestructiveAction: true,
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
+}
+
 class _BoardTile extends StatelessWidget {
   final Board board;
   final int messageCount;
@@ -315,11 +343,8 @@ class _BoardTile extends StatelessWidget {
                     Positioned(
                       top: 8,
                       right: 8,
-                      child: _TinyIconButton(
-                        icon: isSelected
-                            ? CupertinoIcons.checkmark_alt_circle_fill
-                            : CupertinoIcons.circle,
-                        color: isSelected ? colors.accent : Colors.white,
+                      child: _BoardSelectButton(
+                        selected: isSelected,
                         onPressed: onCommitSelect,
                       ),
                     ),
@@ -580,6 +605,43 @@ class _BoardImageSwatch extends StatelessWidget {
   }
 }
 
+class _BoardSelectButton extends StatelessWidget {
+  final bool selected;
+  final VoidCallback onPressed;
+
+  const _BoardSelectButton({required this.selected, required this.onPressed});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    return SizedBox.square(
+      dimension: 38,
+      child: IconButton(
+        tooltip: selected ? 'Selected board' : 'Select board',
+        onPressed: onPressed,
+        padding: EdgeInsets.zero,
+        iconSize: 21,
+        color: selected ? colors.card : Colors.white,
+        style: IconButton.styleFrom(
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size.square(38),
+          backgroundColor: selected
+              ? colors.accent
+              : Colors.black.withValues(alpha: 0.24),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: Colors.white.withValues(alpha: selected ? 0.0 : 0.82),
+              width: 1.8,
+            ),
+          ),
+        ),
+        icon: const Icon(CupertinoIcons.checkmark),
+      ),
+    );
+  }
+}
+
 class _TinyIconButton extends StatelessWidget {
   final IconData icon;
   final Color color;
@@ -625,17 +687,20 @@ class _BoardsStoreFacade {
     await boardsBox.put(board.id, board);
   }
 
-  Future<void> deleteBoard(String id) async {
+  Future<List<Note>> deleteBoard(String id) async {
     final remaining = getAllBoardsSorted()
         .where((board) => board.id != id)
         .toList();
-    if (remaining.isEmpty) return;
-    final fallback = remaining.first.id;
-    final notesToMove = notesBox.values
-        .where((note) => note.boardId == id)
+    if (remaining.isEmpty) return const [];
+    final now = DateTime.now();
+    final notesToRecycle = notesBox.values
+        .where((note) => note.boardId == id && !note.isDeleted)
         .toList();
-    for (final note in notesToMove) {
-      await notesBox.put(note.id, note.copyWith(boardId: fallback));
+    for (final note in notesToRecycle) {
+      await notesBox.put(
+        note.id,
+        note.copyWith(deletedAt: now, orderIndex: 0, indentLevel: 0),
+      );
     }
     await boardsBox.delete(id);
     for (var i = 0; i < remaining.length; i++) {
@@ -644,6 +709,7 @@ class _BoardsStoreFacade {
         remaining[i].copyWith(orderIndex: i),
       );
     }
+    return notesToRecycle;
   }
 
   List<Board> getAllBoardsSorted() {

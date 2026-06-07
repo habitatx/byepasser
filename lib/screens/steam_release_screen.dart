@@ -36,12 +36,12 @@ const List<int> _kHumLifetimeSteps = <int>[
   30 * 24 * 60,
 ];
 
-Future<void> showQuickNoteComposerDialog(
+Future<bool?> showQuickNoteComposerDialog(
   BuildContext context, {
   required ValueListenable<bool> isHumListenable,
   required ValueChanged<int> onTabSelected,
 }) {
-  return showGeneralDialog<void>(
+  return showGeneralDialog<bool>(
     context: context,
     barrierColor: Colors.transparent,
     barrierDismissible: false,
@@ -243,7 +243,7 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
       didRelease.value = true;
       await haptics.success();
       if (!context.mounted) return;
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(context, rootNavigator: true).pop(true);
     }
 
     return Stack(
@@ -271,7 +271,7 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
           bottom: _composerTabHitZoneHeight(context),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => Navigator.of(context, rootNavigator: true).pop(),
+            onTap: () => Navigator.of(context, rootNavigator: true).pop(false),
             child: const SizedBox.expand(),
           ),
         ),
@@ -403,7 +403,7 @@ class _ComposerTabHitZones extends StatelessWidget {
   void _finishTabSelection(BuildContext context, int index) {
     _activateTab(index);
     if (index == 1 || index == 2) return;
-    Navigator.of(context, rootNavigator: true).pop();
+    Navigator.of(context, rootNavigator: true).pop(false);
   }
 
   void _setMode(bool isHum) {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
@@ -17,12 +19,14 @@ import '../utils/lifetime.dart';
 import 'image_annotator_screen.dart';
 import '../widgets/steam_released_dialog.dart';
 
+const Duration _kEditorAutoSaveDelay = Duration(milliseconds: 650);
+
 /// Full note creation + editing screen.
 /// - Huge live countdown at top
 /// - Title + body (markdown supported)
 /// - Lifetime slider (or fixed for puff / quick ephemeral note)
 /// - Color tag picker (0-7)
-/// - Extend once (if not a puff and not already extended)
+/// - Extend once (if not already extended)
 /// - Prominent Copy + Share (iOS share sheet)
 /// - Burn Now for Puff notes
 class NoteEditorScreen extends HookConsumerWidget {
@@ -62,11 +66,13 @@ class NoteEditorScreen extends HookConsumerWidget {
     final notif = ref.read(notificationServiceProvider);
     final store = _SimpleStoreFacade(); // same pragmatic facade as home
     final picker = useMemoized(ImagePicker.new);
+    final autoSaveTimer = useRef<Timer?>(null);
+    final autoSaveInFlight = useRef(false);
+    final autoSaveCompleter = useRef<Completer<void>?>(null);
+    final autoSaveRequested = useRef(false);
+    final textEditRevision = useState(0);
 
-    final canExtend =
-        currentNote.value != null &&
-        !currentNote.value!.extended &&
-        !currentNote.value!.isSteamMode;
+    final canExtend = currentNote.value != null && !currentNote.value!.extended;
 
     // Auto-generate title preview if setting enabled and title empty
     final effectiveTitle = useMemoized(() {
@@ -86,9 +92,153 @@ class NoteEditorScreen extends HookConsumerWidget {
       return DateTime.now().add(Duration(minutes: lifetime.value));
     }, [lifetime.value, currentNote.value]);
 
+    String? resolvedTitle({required bool savingNewNote}) {
+      final trimmedTitle = titleCtrl.text.trim();
+      if (savingNewNote && isSteamMode) return null;
+      if (trimmedTitle.isEmpty && settings.autoGenerateTitle) return null;
+      return trimmedTitle;
+    }
+
+    _NoteEditorDraft currentDraft() {
+      return _NoteEditorDraft(
+        title: resolvedTitle(savingNewNote: false),
+        body: bodyCtrl.text.trim(),
+        colorTag: selectedTag.value,
+        attachmentPaths: List<String>.from(attachmentPaths.value),
+        lifetimeMinutes: lifetime.value,
+      );
+    }
+
+    Note? applyDraftToNote(Note base, _NoteEditorDraft draft) {
+      if (draft.body.isEmpty) return null;
+
+      var updated = base.copyWith(
+        title: draft.title,
+        body: draft.body,
+        colorTag: draft.colorTag,
+        attachmentPaths: draft.attachmentPaths,
+      );
+
+      // If a lifetime control changes this existing note before it has used its
+      // extension, preserve the original behavior and shift the expiry by delta.
+      if (!base.extended && draft.lifetimeMinutes != base.lifetimeMinutes) {
+        final diff = draft.lifetimeMinutes - base.lifetimeMinutes;
+        updated = updated.copyWith(
+          expiresAt: base.expiresAt.add(Duration(minutes: diff)),
+          lifetimeMinutes: draft.lifetimeMinutes,
+        );
+      }
+
+      return updated;
+    }
+
+    Future<Note?> persistExistingDraft({
+      _NoteEditorDraft? draft,
+      bool updateLocalState = true,
+    }) async {
+      final baseNote = currentNote.value;
+      if (baseNote == null) return null;
+
+      final latest = store.notesBox.get(baseNote.id) ?? baseNote;
+      if (latest.isDeleted) return latest;
+
+      final updated = applyDraftToNote(latest, draft ?? currentDraft());
+      if (updated == null) return latest;
+
+      if (_sameEditableNoteState(latest, updated)) {
+        if (updateLocalState) currentNote.value = latest;
+        return latest;
+      }
+
+      await store.updateNote(updated);
+      await notif.scheduleExpiryReminders(updated, settings);
+      if (updateLocalState) {
+        currentNote.value = updated;
+        ref.invalidate(notesProvider);
+      }
+      return updated;
+    }
+
+    Future<void> flushExistingAutoSave() async {
+      autoSaveTimer.value?.cancel();
+      autoSaveTimer.value = null;
+      if (isNew || currentNote.value == null) return;
+
+      if (autoSaveInFlight.value) {
+        autoSaveRequested.value = true;
+        await autoSaveCompleter.value?.future;
+        return;
+      }
+
+      final completer = Completer<void>();
+      autoSaveCompleter.value = completer;
+      autoSaveInFlight.value = true;
+      try {
+        do {
+          autoSaveRequested.value = false;
+          await persistExistingDraft();
+        } while (autoSaveRequested.value);
+        if (!completer.isCompleted) completer.complete();
+      } catch (_) {
+        if (!completer.isCompleted) completer.complete();
+        rethrow;
+      } finally {
+        autoSaveInFlight.value = false;
+        if (autoSaveCompleter.value == completer) {
+          autoSaveCompleter.value = null;
+        }
+      }
+    }
+
     useEffect(() {
-      // If editing existing, lock lifetime slider unless extending
-      return null;
+      void markTextChanged() => textEditRevision.value++;
+
+      titleCtrl.addListener(markTextChanged);
+      bodyCtrl.addListener(markTextChanged);
+      return () {
+        titleCtrl.removeListener(markTextChanged);
+        bodyCtrl.removeListener(markTextChanged);
+      };
+    }, [titleCtrl, bodyCtrl]);
+
+    useEffect(
+      () {
+        if (isNew || currentNote.value == null) return null;
+
+        autoSaveTimer.value?.cancel();
+        autoSaveTimer.value = Timer(_kEditorAutoSaveDelay, () {
+          unawaited(flushExistingAutoSave().catchError((Object _) {}));
+        });
+
+        return () {
+          autoSaveTimer.value?.cancel();
+          autoSaveTimer.value = null;
+        };
+      },
+      [
+        isNew,
+        textEditRevision.value,
+        selectedTag.value,
+        attachmentPaths.value,
+        lifetime.value,
+        currentNote.value?.id,
+        settings.autoGenerateTitle,
+      ],
+    );
+
+    useEffect(() {
+      return () {
+        autoSaveTimer.value?.cancel();
+        autoSaveTimer.value = null;
+        if (!isNew && currentNote.value != null) {
+          unawaited(
+            persistExistingDraft(
+              draft: currentDraft(),
+              updateLocalState: false,
+            ).catchError((Object _) => null),
+          );
+        }
+      };
     }, const []);
 
     Future<void> saveAndExit() async {
@@ -98,11 +248,8 @@ class NoteEditorScreen extends HookConsumerWidget {
         return;
       }
 
-      final title = titleCtrl.text.trim().isEmpty && settings.autoGenerateTitle
-          ? null
-          : titleCtrl.text.trim();
-
       if (isNew) {
+        final title = resolvedTitle(savingNewNote: true);
         final newNote = Note.create(
           body: body,
           lifetimeMinutes: lifetime.value,
@@ -116,26 +263,7 @@ class NoteEditorScreen extends HookConsumerWidget {
         await notif.scheduleExpiryReminders(newNote, settings);
         // box mutated — provider reads live from Hive.
       } else {
-        // Update
-        var updated = note!.copyWith(
-          title: title,
-          body: body,
-          colorTag: selectedTag.value,
-          attachmentPaths: attachmentPaths.value,
-        );
-
-        // If user changed lifetime on an existing non-extended note, allow it (treat as first set)
-        if (!note.extended && lifetime.value != note.lifetimeMinutes) {
-          final diff = lifetime.value - note.lifetimeMinutes;
-          updated = updated.copyWith(
-            expiresAt: note.expiresAt.add(Duration(minutes: diff)),
-            lifetimeMinutes: lifetime.value,
-          );
-        }
-
-        await store.updateNote(updated);
-        await notif.scheduleExpiryReminders(updated, settings);
-        // box mutated — provider reads live from Hive.
+        await flushExistingAutoSave();
       }
 
       // Bump so the home board (and any watchers) immediately see the new/updated note.
@@ -146,8 +274,10 @@ class NoteEditorScreen extends HookConsumerWidget {
     }
 
     Future<void> extendOnce() async {
+      await flushExistingAutoSave();
+      if (!context.mounted) return;
       final baseNote = currentNote.value;
-      if (baseNote == null || baseNote.extended || baseNote.isSteamMode) {
+      if (baseNote == null || baseNote.extended) {
         return;
       }
       final extensionMinutes = await _showExtendLifetimeDialog(context);
@@ -421,8 +551,8 @@ class NoteEditorScreen extends HookConsumerWidget {
                 icon: const Icon(CupertinoIcons.time),
                 label: Text(
                   currentNote.value?.extended == true
-                      ? 'Lifetime extended'
-                      : 'Extend lifetime',
+                      ? 'Extension used'
+                      : 'One time extension',
                 ),
                 style: FilledButton.styleFrom(
                   backgroundColor: colors.accent.withValues(alpha: 0.9),
@@ -464,6 +594,39 @@ Future<int?> _showExtendLifetimeDialog(BuildContext context) {
     context: context,
     builder: (_) => const _ExtendLifetimeDialog(),
   );
+}
+
+class _NoteEditorDraft {
+  final String? title;
+  final String body;
+  final int? colorTag;
+  final List<String> attachmentPaths;
+  final int lifetimeMinutes;
+
+  const _NoteEditorDraft({
+    required this.title,
+    required this.body,
+    required this.colorTag,
+    required this.attachmentPaths,
+    required this.lifetimeMinutes,
+  });
+}
+
+bool _sameEditableNoteState(Note left, Note right) {
+  return left.title == right.title &&
+      left.body == right.body &&
+      left.expiresAt == right.expiresAt &&
+      left.lifetimeMinutes == right.lifetimeMinutes &&
+      left.colorTag == right.colorTag &&
+      _sameStringList(left.attachmentPaths, right.attachmentPaths);
+}
+
+bool _sameStringList(List<String> left, List<String> right) {
+  if (left.length != right.length) return false;
+  for (var i = 0; i < left.length; i++) {
+    if (left[i] != right[i]) return false;
+  }
+  return true;
 }
 
 class _ExtendLifetimeDialog extends StatefulWidget {

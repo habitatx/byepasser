@@ -66,22 +66,29 @@ class _AppShellState extends ConsumerState<AppShell> {
         };
         _composerIsHum!.addListener(_composerModeListener!);
         showQuickNoteComposerDialog(
-          context,
-          isHumListenable: _composerIsHum!,
-          onTabSelected: (selectedIndex) {
-            if (!mounted) return;
-            _setActiveTab(selectedIndex);
-          },
-        ).whenComplete(() {
-          if (!mounted) return;
-          if (_composerModeListener != null) {
-            _composerIsHum?.removeListener(_composerModeListener!);
-          }
-          _composerModeListener = null;
-          _composerIsHum?.dispose();
-          _composerIsHum = null;
-          _composerOpen = false;
-        });
+              context,
+              isHumListenable: _composerIsHum!,
+              onTabSelected: (selectedIndex) {
+                if (!mounted) return;
+                _setActiveTab(selectedIndex);
+              },
+            )
+            .then((didRelease) {
+              if (!mounted) return;
+              if (didRelease == true) {
+                _setActiveTab(0);
+              }
+            })
+            .whenComplete(() {
+              if (!mounted) return;
+              if (_composerModeListener != null) {
+                _composerIsHum?.removeListener(_composerModeListener!);
+              }
+              _composerModeListener = null;
+              _composerIsHum?.dispose();
+              _composerIsHum = null;
+              _composerOpen = false;
+            });
       });
       return;
     }

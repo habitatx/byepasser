@@ -37,6 +37,7 @@ class HomeScreen extends HookConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final cardsMinimized = useState(false);
     final orderMode = useState(_BoardOrderMode.stored);
+    final showPuffsOnly = useState(false);
 
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final selectedBoard = ref.watch(selectedBoardProvider);
@@ -46,7 +47,11 @@ class HomeScreen extends HookConsumerWidget {
         ? ref.watch(recycledNotesProvider)
         : ref.watch(currentBoardNotesProvider);
     final orderedNotes = useMemoized(() {
-      final list = List<Note>.from(storedNotes);
+      final list = storedNotes
+          .where(
+            (note) => recycleBin || !showPuffsOnly.value || note.isSteamMode,
+          )
+          .toList();
       if (!recycleBin && orderMode.value == _BoardOrderMode.time) {
         list.sort((a, b) {
           final expiryCompare = a.compareExpiry(b);
@@ -55,9 +60,10 @@ class HomeScreen extends HookConsumerWidget {
         });
       }
       return list;
-    }, [storedNotes, recycleBin, orderMode.value]);
+    }, [storedNotes, recycleBin, orderMode.value, showPuffsOnly.value]);
     final preserveIndents =
         recycleBin || orderMode.value == _BoardOrderMode.stored;
+    final canReorderNotes = preserveIndents && !showPuffsOnly.value;
 
     final store = useMemoized(() => _getOrCreateStore(), const []);
     final haptics = ref.read(hapticsProvider);
@@ -80,6 +86,7 @@ class HomeScreen extends HookConsumerWidget {
           count: orderedNotes.length,
           isMinimized: cardsMinimized.value,
           isTimeSorted: !recycleBin && orderMode.value == _BoardOrderMode.time,
+          showPuffsOnly: showPuffsOnly.value,
           onOpenBoards: recycleBin
               ? () => _discardCompletedTasks(
                   context,
@@ -100,6 +107,14 @@ class HomeScreen extends HookConsumerWidget {
               ? null
               : () async {
                   cardsMinimized.value = !cardsMinimized.value;
+                  await haptics.selection();
+                },
+          onTogglePuffFilter: recycleBin
+              ? null
+              : () async {
+                  showPuffsOnly.value = !showPuffsOnly.value;
+                  ref.read(boardInsertAfterNoteIdProvider.notifier).state =
+                      null;
                   await haptics.selection();
                 },
           onToggleOrder: recycleBin
@@ -137,7 +152,7 @@ class HomeScreen extends HookConsumerWidget {
                 recycleBin: recycleBin,
                 isMinimized: cardsMinimized.value,
                 preserveIndents: preserveIndents,
-                canReorder: preserveIndents,
+                canReorder: canReorderNotes,
                 selectedInsertAfterNoteId: preserveIndents && !recycleBin
                     ? insertAfterNoteId
                     : null,
@@ -337,8 +352,10 @@ class _BoardCapsuleTitle extends StatelessWidget {
   final int count;
   final bool isMinimized;
   final bool isTimeSorted;
+  final bool showPuffsOnly;
   final VoidCallback? onOpenBoards;
   final VoidCallback? onToggleMinimized;
+  final VoidCallback? onTogglePuffFilter;
   final VoidCallback? onToggleOrder;
 
   const _BoardCapsuleTitle({
@@ -347,69 +364,81 @@ class _BoardCapsuleTitle extends StatelessWidget {
     required this.count,
     required this.isMinimized,
     required this.isTimeSorted,
+    required this.showPuffsOnly,
     required this.onOpenBoards,
     required this.onToggleMinimized,
+    required this.onTogglePuffFilter,
     required this.onToggleOrder,
   });
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
-    return GestureDetector(
-      onTap: onOpenBoards,
-      child: Container(
-        height: 44,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        decoration: colors.cardDecoration(color: colors.card, radius: 999),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 19, color: colors.accent),
-            const SizedBox(width: 8),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 128),
-              child: Text(
-                title.trim().isEmpty ? 'Board' : title.trim(),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: colors.textPrimary,
-                  fontWeight: FontWeight.w800,
+    final maxCapsuleWidth = MediaQuery.sizeOf(context).width - 32;
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxCapsuleWidth),
+      child: GestureDetector(
+        onTap: onOpenBoards,
+        child: Container(
+          height: 44,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: colors.cardDecoration(color: colors.card, radius: 999),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 19, color: colors.accent),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  title.trim().isEmpty ? 'Board' : title.trim(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: colors.textPrimary,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              '$count${isMinimized && count > 0 ? ' min' : ''}',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: colors.textSecondary,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            if (onToggleOrder != null) ...[
               const SizedBox(width: 8),
+              Text(
+                '$count${isMinimized && count > 0 ? ' min' : ''}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: colors.textSecondary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              if (onTogglePuffFilter != null) ...[
+                const SizedBox(width: 8),
+                _PuffFilterToggleButton(
+                  showPuffsOnly: showPuffsOnly,
+                  onPressed: onTogglePuffFilter!,
+                ),
+                const SizedBox(width: 4),
+              ] else
+                const SizedBox(width: 8),
+              if (onToggleOrder != null) ...[
+                _CapsuleIconButton(
+                  tooltip: isTimeSorted
+                      ? 'Sort by stored order'
+                      : 'Sort by expiry time',
+                  onPressed: onToggleOrder,
+                  icon: isTimeSorted
+                      ? CupertinoIcons.clock
+                      : CupertinoIcons.line_horizontal_3_decrease,
+                ),
+                const SizedBox(width: 4),
+              ],
               _CapsuleIconButton(
-                tooltip: isTimeSorted
-                    ? 'Sort by stored order'
-                    : 'Sort by expiry time',
-                onPressed: onToggleOrder,
-                icon: isTimeSorted
-                    ? CupertinoIcons.clock
-                    : CupertinoIcons.line_horizontal_3_decrease,
+                tooltip: isMinimized
+                    ? 'Expand board cards'
+                    : 'Minimize board cards',
+                onPressed: onToggleMinimized,
+                icon: isMinimized
+                    ? CupertinoIcons.arrow_up_left_arrow_down_right
+                    : CupertinoIcons.arrow_down_right_arrow_up_left,
               ),
-              const SizedBox(width: 4),
-            ] else
-              const SizedBox(width: 8),
-            _CapsuleIconButton(
-              tooltip: isMinimized
-                  ? 'Expand board cards'
-                  : 'Minimize board cards',
-              onPressed: onToggleMinimized,
-              icon: isMinimized
-                  ? CupertinoIcons.arrow_up_left_arrow_down_right
-                  : CupertinoIcons.arrow_down_right_arrow_up_left,
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -446,6 +475,57 @@ class _CapsuleIconButton extends StatelessWidget {
           minimumSize: const Size(42, 34),
         ),
         icon: Icon(icon),
+      ),
+    );
+  }
+}
+
+class _PuffFilterToggleButton extends StatelessWidget {
+  final bool showPuffsOnly;
+  final VoidCallback onPressed;
+
+  const _PuffFilterToggleButton({
+    required this.showPuffsOnly,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final muted = colors.textSecondary.withValues(alpha: 0.58);
+    final active = colors.accent;
+    return SizedBox(
+      width: 48,
+      height: 34,
+      child: IconButton(
+        tooltip: showPuffsOnly ? 'Show all notes' : 'Show puffs only',
+        onPressed: onPressed,
+        padding: EdgeInsets.zero,
+        iconSize: 18,
+        style: IconButton.styleFrom(
+          backgroundColor: showPuffsOnly
+              ? colors.accent.withValues(alpha: 0.12)
+              : Colors.transparent,
+          side: BorderSide(
+            color: showPuffsOnly
+                ? colors.accent.withValues(alpha: 0.24)
+                : colors.divider.withValues(alpha: 0.65),
+          ),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          minimumSize: const Size(48, 34),
+        ),
+        icon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(CupertinoIcons.text_bubble, size: 15, color: muted),
+            const SizedBox(width: 3),
+            Icon(
+              CupertinoIcons.wind,
+              size: 18,
+              color: showPuffsOnly ? active : muted,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -955,9 +1035,10 @@ class _BoardNoteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final theme = Theme.of(context);
-    final accent = note.colorTag == null
+    final noteAccent = note.colorTag == null
         ? colors.accent
         : ByepasserTheme.accentPalette[note.colorTag!.clamp(0, 7)];
+    final capsuleAccent = note.isSteamMode ? colors.accent : noteAccent;
     final radius = colors.cardStyle == CardStyles.minimal ? 10.0 : 18.0;
     final cardRadius = BorderRadius.circular(radius);
     final title = note.title?.trim();
@@ -992,10 +1073,10 @@ class _BoardNoteCard extends StatelessWidget {
                                 horizontal: 10,
                               ),
                               decoration: BoxDecoration(
-                                color: accent.withValues(alpha: 0.14),
+                                color: capsuleAccent.withValues(alpha: 0.14),
                                 borderRadius: BorderRadius.circular(999),
                                 border: Border.all(
-                                  color: accent.withValues(alpha: 0.34),
+                                  color: capsuleAccent.withValues(alpha: 0.34),
                                 ),
                               ),
                               child: Row(
@@ -1006,14 +1087,14 @@ class _BoardNoteCard extends StatelessWidget {
                                         ? CupertinoIcons.wind
                                         : CupertinoIcons.text_bubble,
                                     size: 16,
-                                    color: accent,
+                                    color: capsuleAccent,
                                   ),
                                   const SizedBox(width: 6),
                                   Text(
                                     note.isSteamMode ? 'Puff' : 'Hum',
                                     style: theme.textTheme.labelMedium
                                         ?.copyWith(
-                                          color: accent,
+                                          color: capsuleAccent,
                                           fontWeight: FontWeight.w800,
                                         ),
                                   ),
