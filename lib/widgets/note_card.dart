@@ -1,168 +1,192 @@
-import 'package:flutter/cupertino.dart';
-import 'package:hooks_riverpod/hooks_riverpod.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../models/note.dart';
-import '../providers/app_providers.dart';
 import '../theme/byepasser_theme.dart';
-import '../utils/lifetime.dart';
-import 'app_surface.dart';
 import 'countdown_text.dart';
 import 'steam_particles.dart';
 
-class NoteCard extends ConsumerWidget {
-  const NoteCard({super.key, required this.note, required this.onTap});
-
+/// The beautiful, calm, responsive card used on the home board.
+/// Supports glassmorphic / minimal / elevated per user setting.
+/// Shows live countdown, color tag, steam treatment, and subtle interactions.
+class NoteCard extends StatelessWidget {
   final Note note;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    final now = ref.watch(currentTimeProvider).value ?? DateTime.now();
-    final progress = expiryProgress(note.createdAt, note.expiresAt, now);
-    final remaining = note.expiresAt.difference(now);
-    final urgency = remaining <= const Duration(hours: 1)
-        ? palette.urgent
-        : remaining <= const Duration(hours: 24)
-        ? palette.warning
-        : palette.accent;
-    final tagColor = note.colorTag == null
-        ? null
-        : ByepasserTheme.accentFor(note.colorTag!);
-
-    return AppSurface(
-      onTap: onTap,
-      semanticLabel: '${note.displayTitle}. Expires soon.',
-      child: Stack(
-        children: [
-          if (note.isSteamMode)
-            Positioned.fill(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: const SteamParticles(opacity: 0.42),
-              ),
-            ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      note.displayTitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: palette.text,
-                        fontSize: 19,
-                        height: 1.12,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                  if (tagColor != null) ...[
-                    const SizedBox(width: 10),
-                    Container(
-                      width: 14,
-                      height: 14,
-                      margin: const EdgeInsets.only(top: 3),
-                      decoration: BoxDecoration(
-                        color: tagColor,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 10),
-              Text(
-                note.preview,
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: palette.mutedText,
-                  fontSize: 15,
-                  height: 1.28,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: [
-                  Icon(
-                    note.isSteamMode
-                        ? CupertinoIcons.flame
-                        : CupertinoIcons.clock,
-                    color: urgency,
-                    size: 17,
-                  ),
-                  const SizedBox(width: 7),
-                  CountdownText(note: note),
-                  const Spacer(),
-                  if (note.isSteamMode)
-                    _Pill(label: 'Steam', color: palette.steam),
-                ],
-              ),
-              const SizedBox(height: 12),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  return ClipRRect(
-                    borderRadius: BorderRadius.circular(999),
-                    child: Stack(
-                      children: [
-                        Container(
-                          height: 5,
-                          color: palette.divider.withValues(alpha: 0.6),
-                        ),
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 240),
-                          width:
-                              constraints.maxWidth *
-                              progress.clamp(0.0, 1.0).toDouble(),
-                          height: 5,
-                          decoration: BoxDecoration(
-                            color: urgency,
-                            borderRadius: BorderRadius.circular(999),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.color});
-
-  final String label;
-  final Color color;
+  const NoteCard({
+    super.key,
+    required this.note,
+    required this.onTap,
+    this.onLongPress,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.18),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: palette.text,
-          fontSize: 12,
-          fontWeight: FontWeight.w800,
+    final theme = Theme.of(context);
+    final colors = theme.extension<ByepasserColors>()!;
+    final isSteam = note.isSteamMode;
+    final remaining = note.remaining;
+    final isDying = remaining.inMinutes < 60 * 6;
+    final isCritical = remaining.inMinutes < 15;
+
+    final cardDeco = colors.cardDecoration(isSteam: isSteam);
+
+    final accentForTag = note.colorTag != null
+        ? ByepasserTheme.accentPalette[note.colorTag!.clamp(0, 7)]
+        : colors.accent;
+
+    return GestureDetector(
+      onTap: onTap,
+      onLongPress: () {
+        HapticFeedback.selectionClick();
+        onLongPress?.call();
+      },
+      child: Container(
+        decoration: cardDeco,
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          children: [
+            // Subtle steam layer for Steam notes
+            if (isSteam)
+              Positioned.fill(
+                child: Opacity(
+                  opacity: colors.isDark ? 0.55 : 0.38,
+                  child: SteamParticles(
+                    intensity: 0.85,
+                    tint: colors.steamTint,
+                    dense: false,
+                  ),
+                ),
+              ),
+
+            // Main content
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Header row: color dot + countdown
+                  Row(
+                    children: [
+                      if (note.colorTag != null)
+                        Container(
+                          width: 9,
+                          height: 9,
+                          margin: const EdgeInsets.only(right: 7),
+                          decoration: BoxDecoration(
+                            color: accentForTag,
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                      Expanded(
+                        child: LiveCountdown(
+                          expiresAt: note.expiresAt,
+                          showSeconds: remaining.inHours < 1,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.1,
+                          ),
+                        ),
+                      ),
+                      if (isSteam)
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+                          decoration: BoxDecoration(
+                            color: colors.steamTint.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'PUFF',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.steamTint,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.6,
+                              fontSize: 9,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 9),
+
+                  // Title
+                  Text(
+                    note.displayTitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      height: 1.15,
+                      color: colors.textPrimary,
+                    ),
+                  ),
+
+                  const SizedBox(height: 6),
+
+                  // Body preview (first ~2 lines)
+                  if (note.body.trim().isNotEmpty)
+                    Text(
+                      _preview(note.body),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.textSecondary,
+                        height: 1.32,
+                      ),
+                    ),
+
+                  const SizedBox(height: 10),
+
+                  // Footer: created + urgency hint
+                  Row(
+                    children: [
+                      Text(
+                        _relativeCreated(note.createdAt),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colors.textSecondary.withValues(alpha: 0.7),
+                        ),
+                      ),
+                      const Spacer(),
+                      if (isDying && !isCritical)
+                        Icon(Icons.schedule, size: 13, color: colors.accent.withValues(alpha: 0.7)),
+                      if (isCritical)
+                        Icon(Icons.warning_amber_rounded, size: 14, color: colors.danger),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            // Subtle top accent line for color tags
+            if (note.colorTag != null)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 2.5,
+                child: Container(color: accentForTag.withValues(alpha: 0.65)),
+              ),
+          ],
         ),
       ),
     );
+  }
+
+  String _preview(String body) {
+    final lines = body.trim().split('\n');
+    final first = lines.first.trim();
+    if (first.length > 92) return '${first.substring(0, 89)}...';
+    return first;
+  }
+
+  String _relativeCreated(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inMinutes < 1) return 'just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
   }
 }

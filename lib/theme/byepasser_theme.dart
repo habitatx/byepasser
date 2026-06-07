@@ -3,346 +3,365 @@ import 'package:flutter/material.dart';
 
 import '../models/app_settings.dart';
 
-class ByepasserPalette extends ThemeExtension<ByepasserPalette> {
-  const ByepasserPalette({
-    required this.key,
-    required this.name,
+/// Central theme definition for Byepasser.
+/// Supports 5 named themes + "Follow System" (uses light/dark pair).
+/// Includes accent colors and card style configuration.
+class ByepasserTheme {
+  static const List<Color> accentPalette = [
+    Color(0xFF6B9BD2), // Soft Sky Blue
+    Color(0xFF7BA88F), // Sage Green
+    Color(0xFFE07A5F), // Warm Terracotta
+    Color(0xFF9B8FC2), // Soft Lavender
+    Color(0xFFD4A574), // Muted Gold
+    Color(0xFFC38D9E), // Dusty Rose
+    Color(0xFF5DA8A8), // Calm Teal
+    Color(0xFF7E9DC2), // Periwinkle
+  ];
+
+  static String accentName(int index) {
+    const names = [
+      'Sky', 'Sage', 'Terracotta', 'Lavender', 'Gold', 'Rose', 'Teal', 'Periwinkle'
+    ];
+    return names[index.clamp(0, 7)];
+  }
+
+  /// Returns the ThemeData for a given settings snapshot.
+  /// The app always uses a light-like structure but with deliberately chosen dark palettes
+  /// for Deep Dusk and Obsidian (so we don't rely on platform dark mode except for Follow System).
+  static ThemeData dataFor(AppSettings settings) {
+    final isFollow = settings.themeKey == ThemeKeys.followSystem;
+    final key = isFollow ? ThemeKeys.whiteCanvas : settings.themeKey;
+    final accent = accentPalette[settings.accentIndex.clamp(0, 7)];
+    final cardStyle = settings.cardStyle;
+
+    final palette = _paletteFor(key);
+    final brightness = (key == ThemeKeys.deepDusk || key == ThemeKeys.obsidianVoid)
+        ? Brightness.dark
+        : Brightness.light;
+
+    final base = ThemeData(
+      brightness: brightness,
+      fontFamily: 'SF Pro', // Explicit system font for iOS (no asset needed)
+      scaffoldBackgroundColor: palette.background,
+      colorScheme: ColorScheme(
+        brightness: brightness,
+        primary: accent,
+        onPrimary: palette.textOnAccent,
+        secondary: accent.withValues(alpha: 0.85),
+        onSecondary: palette.textOnAccent,
+        surface: palette.card,
+        onSurface: palette.textPrimary,
+        error: const Color(0xFFE07A5F),
+        onError: Colors.white,
+      ),
+      textTheme: _textThemeFor(palette),
+      appBarTheme: AppBarTheme(
+        backgroundColor: palette.background,
+        foregroundColor: palette.textPrimary,
+        elevation: 0,
+        centerTitle: false,
+        titleTextStyle: _textThemeFor(palette).headlineSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              letterSpacing: -0.3,
+            ),
+      ),
+      cupertinoOverrideTheme: CupertinoThemeData(
+        brightness: brightness,
+        primaryColor: accent,
+        barBackgroundColor: palette.background.withValues(alpha: 0.92),
+        textTheme: CupertinoTextThemeData(
+          // Explicit system font + no decoration to prevent inherited yellow underlines
+          // from Material/Cupertino theme composition on iOS.
+          textStyle: const TextStyle(fontFamily: 'SF Pro', decoration: TextDecoration.none),
+          navLargeTitleTextStyle: _textThemeFor(palette).headlineLarge?.copyWith(
+                fontWeight: FontWeight.w700,
+                letterSpacing: -1.0,
+                color: palette.textPrimary,
+                decoration: TextDecoration.none,
+              ),
+          navTitleTextStyle: _textThemeFor(palette).titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: palette.textPrimary,
+                decoration: TextDecoration.none,
+              ),
+        ),
+      ),
+      cardTheme: CardThemeData(
+        color: palette.card,
+        elevation: cardStyle == CardStyles.elevated ? 8 : 0,
+        shadowColor: palette.shadow,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(cardStyle == CardStyles.minimal ? 8 : 16),
+        ),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      ),
+      floatingActionButtonTheme: FloatingActionButtonThemeData(
+        backgroundColor: accent,
+        foregroundColor: palette.textOnAccent,
+        elevation: 4,
+      ),
+      dividerColor: palette.divider,
+      iconTheme: IconThemeData(color: palette.textSecondary),
+    );
+
+    return base.copyWith(
+      extensions: <ThemeExtension<dynamic>>[
+        ByepasserColors(
+          background: palette.background,
+          card: palette.card,
+          cardAlt: palette.cardAlt,
+          textPrimary: palette.textPrimary,
+          textSecondary: palette.textSecondary,
+          textOnAccent: palette.textOnAccent,
+          accent: accent,
+          accentLight: accent.withValues(alpha: 0.15),
+          divider: palette.divider,
+          shadow: palette.shadow,
+          danger: const Color(0xFFE07A5F),
+          success: const Color(0xFF7BA88F),
+          steamTint: const Color(0xFF9BA3AF),
+          cardStyle: cardStyle,
+          isDark: brightness == Brightness.dark,
+        ),
+      ],
+    );
+  }
+
+  static _ThemePalette _paletteFor(String key) {
+    switch (key) {
+      case ThemeKeys.whiteCanvas:
+        return _ThemePalette(
+          background: const Color(0xFFFFFFFF),
+          card: const Color(0xFFF8F8F8),
+          cardAlt: const Color(0xFFF0F0F0),
+          textPrimary: const Color(0xFF111111),
+          textSecondary: const Color(0xFF555555),
+          textOnAccent: Colors.white,
+          divider: const Color(0xFFE5E5E5),
+          shadow: Colors.black.withValues(alpha: 0.06),
+        );
+      case ThemeKeys.softIvory:
+        return _ThemePalette(
+          background: const Color(0xFFFAF6F0),
+          card: const Color(0xFFF0EDE6),
+          cardAlt: const Color(0xFFE8E4DC),
+          textPrimary: const Color(0xFF2C2C2C),
+          textSecondary: const Color(0xFF5F5F5F),
+          textOnAccent: Colors.white,
+          divider: const Color(0xFFE0D9CC),
+          shadow: Colors.black.withValues(alpha: 0.05),
+        );
+      case ThemeKeys.neutralMist:
+        return _ThemePalette(
+          background: const Color(0xFFF0F0F0),
+          card: Colors.white,
+          cardAlt: const Color(0xFFF7F7F7),
+          textPrimary: const Color(0xFF1F1F1F),
+          textSecondary: const Color(0xFF5A5A5A),
+          textOnAccent: Colors.white,
+          divider: const Color(0xFFE0E0E0),
+          shadow: Colors.black.withValues(alpha: 0.08),
+        );
+      case ThemeKeys.deepDusk:
+        return _ThemePalette(
+          background: const Color(0xFF1C1F2E),
+          card: const Color(0xFF25293D),
+          cardAlt: const Color(0xFF2F334A),
+          textPrimary: const Color(0xFFEAEAEA),
+          textSecondary: const Color(0xFFB0B5C3),
+          textOnAccent: Colors.white,
+          divider: const Color(0xFF3A3F55),
+          shadow: Colors.black.withValues(alpha: 0.35),
+        );
+      case ThemeKeys.obsidianVoid:
+      default:
+        return _ThemePalette(
+          background: const Color(0xFF000000),
+          card: const Color(0xFF111111),
+          cardAlt: const Color(0xFF1A1A1A),
+          textPrimary: Colors.white,
+          textSecondary: const Color(0xFF9A9A9A),
+          textOnAccent: Colors.white,
+          divider: const Color(0xFF222222),
+          shadow: Colors.black.withValues(alpha: 0.6),
+        );
+    }
+  }
+
+  static TextTheme _textThemeFor(_ThemePalette p) {
+    return TextTheme(
+      displayLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -1.2, decoration: TextDecoration.none),
+      displayMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -0.8, decoration: TextDecoration.none),
+      headlineLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -0.6, decoration: TextDecoration.none),
+      headlineMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, letterSpacing: -0.4, decoration: TextDecoration.none),
+      headlineSmall: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, decoration: TextDecoration.none),
+      titleLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, letterSpacing: -0.3, decoration: TextDecoration.none),
+      titleMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w500, decoration: TextDecoration.none),
+      bodyLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w400, height: 1.35, decoration: TextDecoration.none),
+      bodyMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w400, height: 1.4, decoration: TextDecoration.none),
+      bodySmall: TextStyle(color: p.textSecondary, fontWeight: FontWeight.w400, decoration: TextDecoration.none),
+      labelLarge: TextStyle(color: p.textSecondary, fontWeight: FontWeight.w500, letterSpacing: 0.2, decoration: TextDecoration.none),
+    );
+  }
+}
+
+/// Custom theme extension carrying Byepasser-specific semantic colors and card style.
+/// Widgets read this via `Theme.of(context).extension<ByepasserColors>()!`
+class ByepasserColors extends ThemeExtension<ByepasserColors> {
+  final Color background;
+  final Color card;
+  final Color cardAlt;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textOnAccent;
+  final Color accent;
+  final Color accentLight;
+  final Color divider;
+  final Color shadow;
+  final Color danger;
+  final Color success;
+  final Color steamTint;
+  final String cardStyle;
+  final bool isDark;
+
+  const ByepasserColors({
     required this.background,
     required this.card,
-    required this.cardStrong,
-    required this.text,
-    required this.mutedText,
-    required this.divider,
+    required this.cardAlt,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textOnAccent,
     required this.accent,
-    required this.onAccent,
-    required this.urgent,
-    required this.warning,
+    required this.accentLight,
+    required this.divider,
+    required this.shadow,
+    required this.danger,
     required this.success,
-    required this.steam,
+    required this.steamTint,
+    required this.cardStyle,
     required this.isDark,
   });
 
-  final String key;
-  final String name;
-  final Color background;
-  final Color card;
-  final Color cardStrong;
-  final Color text;
-  final Color mutedText;
-  final Color divider;
-  final Color accent;
-  final Color onAccent;
-  final Color urgent;
-  final Color warning;
-  final Color success;
-  final Color steam;
-  final bool isDark;
-
   @override
-  ByepasserPalette copyWith({
-    String? key,
-    String? name,
+  ByepasserColors copyWith({
     Color? background,
     Color? card,
-    Color? cardStrong,
-    Color? text,
-    Color? mutedText,
-    Color? divider,
+    Color? cardAlt,
+    Color? textPrimary,
+    Color? textSecondary,
+    Color? textOnAccent,
     Color? accent,
-    Color? onAccent,
-    Color? urgent,
-    Color? warning,
+    Color? accentLight,
+    Color? divider,
+    Color? shadow,
+    Color? danger,
     Color? success,
-    Color? steam,
+    Color? steamTint,
+    String? cardStyle,
     bool? isDark,
   }) {
-    return ByepasserPalette(
-      key: key ?? this.key,
-      name: name ?? this.name,
+    return ByepasserColors(
       background: background ?? this.background,
       card: card ?? this.card,
-      cardStrong: cardStrong ?? this.cardStrong,
-      text: text ?? this.text,
-      mutedText: mutedText ?? this.mutedText,
-      divider: divider ?? this.divider,
+      cardAlt: cardAlt ?? this.cardAlt,
+      textPrimary: textPrimary ?? this.textPrimary,
+      textSecondary: textSecondary ?? this.textSecondary,
+      textOnAccent: textOnAccent ?? this.textOnAccent,
       accent: accent ?? this.accent,
-      onAccent: onAccent ?? this.onAccent,
-      urgent: urgent ?? this.urgent,
-      warning: warning ?? this.warning,
+      accentLight: accentLight ?? this.accentLight,
+      divider: divider ?? this.divider,
+      shadow: shadow ?? this.shadow,
+      danger: danger ?? this.danger,
       success: success ?? this.success,
-      steam: steam ?? this.steam,
+      steamTint: steamTint ?? this.steamTint,
+      cardStyle: cardStyle ?? this.cardStyle,
       isDark: isDark ?? this.isDark,
     );
   }
 
   @override
-  ByepasserPalette lerp(ThemeExtension<ByepasserPalette>? other, double t) {
-    if (other is! ByepasserPalette) {
-      return this;
-    }
-
-    return ByepasserPalette(
-      key: t < 0.5 ? key : other.key,
-      name: t < 0.5 ? name : other.name,
+  ByepasserColors lerp(ThemeExtension<ByepasserColors>? other, double t) {
+    if (other is! ByepasserColors) return this;
+    return ByepasserColors(
       background: Color.lerp(background, other.background, t)!,
       card: Color.lerp(card, other.card, t)!,
-      cardStrong: Color.lerp(cardStrong, other.cardStrong, t)!,
-      text: Color.lerp(text, other.text, t)!,
-      mutedText: Color.lerp(mutedText, other.mutedText, t)!,
-      divider: Color.lerp(divider, other.divider, t)!,
+      cardAlt: Color.lerp(cardAlt, other.cardAlt, t)!,
+      textPrimary: Color.lerp(textPrimary, other.textPrimary, t)!,
+      textSecondary: Color.lerp(textSecondary, other.textSecondary, t)!,
+      textOnAccent: Color.lerp(textOnAccent, other.textOnAccent, t)!,
       accent: Color.lerp(accent, other.accent, t)!,
-      onAccent: Color.lerp(onAccent, other.onAccent, t)!,
-      urgent: Color.lerp(urgent, other.urgent, t)!,
-      warning: Color.lerp(warning, other.warning, t)!,
+      accentLight: Color.lerp(accentLight, other.accentLight, t)!,
+      divider: Color.lerp(divider, other.divider, t)!,
+      shadow: Color.lerp(shadow, other.shadow, t)!,
+      danger: Color.lerp(danger, other.danger, t)!,
       success: Color.lerp(success, other.success, t)!,
-      steam: Color.lerp(steam, other.steam, t)!,
-      isDark: t < 0.5 ? isDark : other.isDark,
+      steamTint: Color.lerp(steamTint, other.steamTint, t)!,
+      cardStyle: cardStyle,
+      isDark: isDark,
     );
   }
-}
 
-class ByepasserTheme {
-  static const accentColors = [
-    Color(0xFF6BA6FF),
-    Color(0xFFFF8FA3),
-    Color(0xFF8BCB88),
-    Color(0xFFE8B86D),
-    Color(0xFFB795FF),
-    Color(0xFF5FCFC2),
-    Color(0xFFFFA36C),
-    Color(0xFFA7C7E7),
-  ];
+  /// Helper for card container decoration that respects the chosen card style.
+  BoxDecoration cardDecoration({bool isSteam = false, double blur = 18}) {
+    final baseColor = card;
+    final radius = cardStyle == CardStyles.minimal ? 10.0 : 18.0;
 
-  static Color accentFor(int index) {
-    final clamped = index.clamp(0, accentColors.length - 1).toInt();
-    return accentColors[clamped];
-  }
-
-  static ThemeData dataFor(
-    AppSettings settings, {
-    Brightness platformBrightness = Brightness.light,
-  }) {
-    final palette = paletteFor(
-      settings.themeKey,
-      settings.accentIndex,
-      platformBrightness: platformBrightness,
-    );
-    final base = palette.isDark ? ThemeData.dark() : ThemeData.light();
-    final scheme =
-        ColorScheme.fromSeed(
-          seedColor: palette.accent,
-          brightness: palette.isDark ? Brightness.dark : Brightness.light,
-        ).copyWith(
-          primary: palette.accent,
-          onPrimary: palette.onAccent,
-          secondary: palette.steam,
-          surface: palette.card,
-          onSurface: palette.text,
-          error: palette.urgent,
-        );
-
-    return base.copyWith(
-      colorScheme: scheme,
-      scaffoldBackgroundColor: palette.background,
-      dividerColor: palette.divider,
-      extensions: [palette],
-      textTheme: base.textTheme.apply(
-        bodyColor: palette.text,
-        displayColor: palette.text,
-      ),
-      cupertinoOverrideTheme: CupertinoThemeData(
-        brightness: palette.isDark ? Brightness.dark : Brightness.light,
-        primaryColor: palette.accent,
-        scaffoldBackgroundColor: palette.background,
-        barBackgroundColor: palette.background.withValues(alpha: 0.86),
-        textTheme: CupertinoTextThemeData(
-          primaryColor: palette.accent,
-          textStyle: TextStyle(color: palette.text),
-          navTitleTextStyle: TextStyle(
-            color: palette.text,
-            fontSize: 17,
-            fontWeight: FontWeight.w600,
-          ),
-          navLargeTitleTextStyle: TextStyle(
-            color: palette.text,
-            fontSize: 34,
-            fontWeight: FontWeight.w700,
-          ),
+    if (cardStyle == CardStyles.glassmorphic) {
+      return BoxDecoration(
+        color: baseColor.withValues(alpha: isDark ? 0.72 : 0.78),
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(
+          color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.035),
+          width: 0.5,
         ),
-      ),
+        boxShadow: [
+          BoxShadow(
+            color: shadow,
+            blurRadius: 24,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      );
+    }
+
+    if (cardStyle == CardStyles.elevated) {
+      return BoxDecoration(
+        color: baseColor,
+        borderRadius: BorderRadius.circular(radius),
+        boxShadow: [
+          BoxShadow(color: shadow, blurRadius: 18, offset: const Offset(0, 10)),
+          BoxShadow(color: shadow.withValues(alpha: 0.5), blurRadius: 4, offset: const Offset(0, 2)),
+        ],
+      );
+    }
+
+    // minimal
+    return BoxDecoration(
+      color: baseColor,
+      borderRadius: BorderRadius.circular(radius),
+      border: Border.all(color: divider, width: 0.5),
     );
-  }
-
-  static ByepasserPalette paletteFor(
-    String key,
-    int accentIndex, {
-    Brightness platformBrightness = Brightness.light,
-  }) {
-    final effectiveKey = key == ThemeKeys.followSystem
-        ? (platformBrightness == Brightness.dark
-              ? ThemeKeys.deepDusk
-              : ThemeKeys.whiteCanvas)
-        : key;
-    final accent = accentFor(accentIndex);
-    final onAccent =
-        ThemeData.estimateBrightnessForColor(accent) == Brightness.dark
-        ? Colors.white
-        : const Color(0xFF101014);
-
-    switch (effectiveKey) {
-      case ThemeKeys.softIvory:
-        return ByepasserPalette(
-          key: effectiveKey,
-          name: 'Soft Ivory',
-          background: const Color(0xFFFAF6F0),
-          card: const Color(0xFFF0EDE6),
-          cardStrong: const Color(0xFFE8E1D7),
-          text: const Color(0xFF25221E),
-          mutedText: const Color(0xFF777067),
-          divider: const Color(0xFFDCD3C6),
-          accent: accent,
-          onAccent: onAccent,
-          urgent: const Color(0xFFE06969),
-          warning: const Color(0xFFD79A38),
-          success: const Color(0xFF5BA86D),
-          steam: const Color(0xFFB7D7D6),
-          isDark: false,
-        );
-      case ThemeKeys.neutralMist:
-        return ByepasserPalette(
-          key: effectiveKey,
-          name: 'Neutral Mist',
-          background: const Color(0xFFF0F0F0),
-          card: const Color(0xFFFFFFFF),
-          cardStrong: const Color(0xFFE7E9EC),
-          text: const Color(0xFF1F2933),
-          mutedText: const Color(0xFF68727D),
-          divider: const Color(0xFFD8DDE3),
-          accent: accent,
-          onAccent: onAccent,
-          urgent: const Color(0xFFD95F6A),
-          warning: const Color(0xFFD19936),
-          success: const Color(0xFF56A66E),
-          steam: const Color(0xFFA7D8E8),
-          isDark: false,
-        );
-      case ThemeKeys.deepDusk:
-        return ByepasserPalette(
-          key: effectiveKey,
-          name: 'Deep Dusk',
-          background: const Color(0xFF1C1F2E),
-          card: const Color(0xFF25293D),
-          cardStrong: const Color(0xFF30364F),
-          text: const Color(0xFFF5F7FF),
-          mutedText: const Color(0xFFAEB6CC),
-          divider: const Color(0xFF3B415C),
-          accent: accent,
-          onAccent: onAccent,
-          urgent: const Color(0xFFFF7E87),
-          warning: const Color(0xFFECC477),
-          success: const Color(0xFF82D49A),
-          steam: const Color(0xFFA9CBE8),
-          isDark: true,
-        );
-      case ThemeKeys.obsidianVoid:
-        return ByepasserPalette(
-          key: effectiveKey,
-          name: 'Obsidian Void',
-          background: const Color(0xFF000000),
-          card: const Color(0xFF0B0B0F),
-          cardStrong: const Color(0xFF17171D),
-          text: const Color(0xFFFFFFFF),
-          mutedText: const Color(0xFFB5B6C1),
-          divider: const Color(0xFF24242B),
-          accent: accent,
-          onAccent: onAccent,
-          urgent: const Color(0xFFFF5D71),
-          warning: const Color(0xFFFFC75E),
-          success: const Color(0xFF76E39B),
-          steam: const Color(0xFF7CC7FF),
-          isDark: true,
-        );
-      case ThemeKeys.whiteCanvas:
-      default:
-        return ByepasserPalette(
-          key: effectiveKey,
-          name: 'White Canvas',
-          background: const Color(0xFFFFFFFF),
-          card: const Color(0xFFF8F8F8),
-          cardStrong: const Color(0xFFEFEFEF),
-          text: const Color(0xFF101010),
-          mutedText: const Color(0xFF696969),
-          divider: const Color(0xFFE0E0E0),
-          accent: accent,
-          onAccent: onAccent,
-          urgent: const Color(0xFFD95765),
-          warning: const Color(0xFFC98C25),
-          success: const Color(0xFF4D9E66),
-          steam: const Color(0xFFAEDCE4),
-          isDark: false,
-        );
-    }
-  }
-
-  static String themeLabel(String key) {
-    switch (key) {
-      case ThemeKeys.softIvory:
-        return 'Soft Ivory';
-      case ThemeKeys.neutralMist:
-        return 'Neutral Mist';
-      case ThemeKeys.deepDusk:
-        return 'Deep Dusk';
-      case ThemeKeys.obsidianVoid:
-        return 'Obsidian Void';
-      case ThemeKeys.followSystem:
-        return 'Follow System';
-      case ThemeKeys.whiteCanvas:
-      default:
-        return 'White Canvas';
-    }
-  }
-
-  static String cardStyleLabel(String key) {
-    switch (key) {
-      case CardStyles.minimal:
-        return 'Minimal';
-      case CardStyles.elevated:
-        return 'Elevated';
-      case CardStyles.glassmorphic:
-      default:
-        return 'Glassmorphic';
-    }
-  }
-
-  static String speedLabel(String key) {
-    switch (key) {
-      case AnimationSpeeds.subtle:
-        return 'Subtle';
-      case AnimationSpeeds.playful:
-        return 'Playful';
-      case AnimationSpeeds.normal:
-      default:
-        return 'Normal';
-    }
-  }
-
-  static String hapticLabel(String key) {
-    switch (key) {
-      case HapticIntensity.off:
-        return 'Off';
-      case HapticIntensity.medium:
-        return 'Medium';
-      case HapticIntensity.bright:
-        return 'Bright';
-      case HapticIntensity.soft:
-      default:
-        return 'Soft';
-    }
   }
 }
 
-extension ByepasserPaletteLookup on BuildContext {
-  ByepasserPalette get palette {
-    return Theme.of(this).extension<ByepasserPalette>()!;
-  }
+class _ThemePalette {
+  final Color background;
+  final Color card;
+  final Color cardAlt;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textOnAccent;
+  final Color divider;
+  final Color shadow;
+
+  _ThemePalette({
+    required this.background,
+    required this.card,
+    required this.cardAlt,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textOnAccent,
+    required this.divider,
+    required this.shadow,
+  });
 }

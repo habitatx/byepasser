@@ -1,586 +1,662 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/app_settings.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
-import '../services/haptics_service.dart';
+import '../services/export_service.dart';
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
-import '../widgets/accent_swatches.dart';
-import '../widgets/app_surface.dart';
-import '../widgets/countdown_text.dart';
 import '../widgets/lifetime_slider.dart';
+import '../widgets/steam_particles.dart';
 import '../widgets/steam_released_dialog.dart';
 
+/// Full note creation + editing screen.
+/// - Huge live countdown at top
+/// - Title + body (markdown supported)
+/// - Lifetime slider (or fixed for puff / quick ephemeral note)
+/// - Color tag picker (0-7)
+/// - Extend once (if not a puff and not already extended)
+/// - Prominent Copy + Share (iOS share sheet)
+/// - Burn Now for Puff notes
 class NoteEditorScreen extends HookConsumerWidget {
-  const NoteEditorScreen({super.key, this.noteId});
+  final Note? existingNote;
+  final bool isSteamMode;
 
-  final String? noteId;
+  const NoteEditorScreen({
+    super.key,
+    this.existingNote,
+    this.isSteamMode = false,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    final settings = ref.watch(settingsProvider);
-    final notes = ref.watch(notesProvider);
-    final note = _findNote(notes, noteId);
-    final isNew = noteId == null;
+    final isNew = existingNote == null;
+    final note = existingNote;
 
-    if (!isNew && note == null) {
-      return CupertinoPageScaffold(
-        backgroundColor: palette.background,
-        navigationBar: const CupertinoNavigationBar(middle: Text('Note gone')),
-        child: Center(
-          child: Text(
-            'This note has already said bye.',
-            style: TextStyle(color: palette.mutedText, fontSize: 16),
-          ),
-        ),
-      );
+    final titleCtrl = useTextEditingController(text: note?.title ?? '');
+    final bodyCtrl = useTextEditingController(text: note?.body ?? '');
+    final lifetime = useState<int>(
+      isSteamMode
+          ? ref.read(settingsProvider).defaultSteamLifetimeMinutes
+          : (note?.lifetimeMinutes ?? ref.read(settingsProvider).defaultLifetimeMinutes),
+    );
+    final selectedTag = useState<int?>(note?.colorTag);
+    final showMarkdownPreview = useState<bool>(false);
+
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final settings = ref.watch(settingsProvider);
+    final haptics = ref.read(hapticsProvider);
+    final notif = ref.read(notificationServiceProvider);
+    final store = _SimpleStoreFacade(); // same pragmatic facade as home
+
+    final canExtend = note != null && !note.extended && !note.isSteamMode;
+
+    // Auto-generate title preview if setting enabled and title empty
+    final effectiveTitle = useMemoized(() {
+      if (titleCtrl.text.trim().isNotEmpty) return titleCtrl.text.trim();
+      if (!settings.autoGenerateTitle) return '';
+      final first = bodyCtrl.text.split('\n').firstWhere((l) => l.trim().isNotEmpty, orElse: () => '');
+      return first.length > 48 ? '${first.substring(0, 45)}...' : first;
+    }, [titleCtrl.text, bodyCtrl.text, settings.autoGenerateTitle]);
+
+    // Live remaining
+    final expiresAt = useMemoized(() {
+      if (note != null && !isNew) {
+        return note.expiresAt;
+      }
+      return DateTime.now().add(Duration(minutes: lifetime.value));
+    }, [lifetime.value, note]);
+
+    useEffect(() {
+      // If editing existing, lock lifetime slider unless extending
+      return null;
+    }, const []);
+
+    Future<void> saveAndExit() async {
+      final body = bodyCtrl.text.trim();
+      if (body.isEmpty) {
+        Navigator.of(context).pop();
+        return;
+      }
+
+      final title = titleCtrl.text.trim().isEmpty && settings.autoGenerateTitle
+          ? null
+          : titleCtrl.text.trim();
+
+      if (isNew) {
+        final newNote = Note.create(
+          body: body,
+          lifetimeMinutes: lifetime.value,
+          title: title,
+          isSteamMode: isSteamMode,
+          colorTag: selectedTag.value,
+        );
+        await store.addNote(newNote);
+        await notif.scheduleExpiryReminders(newNote, settings);
+        // box mutated — provider reads live from Hive.
+      } else {
+        // Update
+        var updated = note!.copyWith(
+          title: title,
+          body: body,
+          colorTag: selectedTag.value,
+        );
+
+        // If user changed lifetime on an existing non-extended note, allow it (treat as first set)
+        if (!note.extended && lifetime.value != note.lifetimeMinutes) {
+          final diff = lifetime.value - note.lifetimeMinutes;
+          updated = updated.copyWith(
+            expiresAt: note.expiresAt.add(Duration(minutes: diff)),
+            lifetimeMinutes: lifetime.value,
+          );
+        }
+
+        await store.updateNote(updated);
+        await notif.scheduleExpiryReminders(updated, settings);
+        // box mutated — provider reads live from Hive.
+      }
+
+      // Bump so the home board (and any watchers) immediately see the new/updated note.
+      ref.invalidate(notesProvider);
+
+      await haptics.selection();
+      if (context.mounted) Navigator.of(context).pop();
     }
 
-    final titleController = useTextEditingController(text: note?.title ?? '');
-    final bodyController = useTextEditingController(text: note?.body ?? '');
-    useListenable(titleController);
-    useListenable(bodyController);
+    Future<void> extendOnce() async {
+      if (note == null) return;
+      final updated = note.copyWith(
+        expiresAt: note.expiresAt.add(const Duration(minutes: 60 * 24)), // +1 day reasonable extension
+        lifetimeMinutes: note.lifetimeMinutes + 60 * 24,
+        extended: true,
+      );
+      await store.updateNote(updated);
+      await notif.scheduleExpiryReminders(updated, settings);
+      ref.invalidate(notesProvider);
+      await haptics.medium();
+      if (context.mounted) Navigator.of(context).pop();
+    }
 
-    final previewMode = useState(false);
-    final lifetimeMinutes = useState(
-      note?.lifetimeMinutes ?? settings.defaultLifetimeMinutes,
-    );
-    final colorTag = useState<int?>(note?.colorTag);
+    Future<void> burnNow() async {
+      if (note == null) return;
+      await store.deleteNote(note.id);
+      await notif.cancelForNote(note.id);
+      ref.invalidate(notesProvider);
+      await haptics.success();
+      if (context.mounted) {
+        Navigator.of(context).pop();
+        await showSteamReleased(context);
+      }
+    }
+
+    Future<void> copyBody() async {
+      await ExportService.copyToClipboard(bodyCtrl.text);
+      await haptics.light();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Copied to clipboard'), duration: Duration(seconds: 1)),
+        );
+      }
+    }
+
+    Future<void> shareNote() async {
+      final text = effectiveTitle.isNotEmpty
+          ? '$effectiveTitle\n\n${bodyCtrl.text}'
+          : bodyCtrl.text;
+      await SharePlus.instance.share(ShareParams(text: text, subject: effectiveTitle.isNotEmpty ? effectiveTitle : 'Byepasser note'));
+    }
 
     return CupertinoPageScaffold(
-      backgroundColor: palette.background,
+      backgroundColor: colors.background,
       navigationBar: CupertinoNavigationBar(
-        middle: Text(isNew ? 'New Note' : 'Edit Note'),
+        middle: Text(isNew ? (isSteamMode ? 'A Puff' : 'New Note') : 'Note'),
         trailing: CupertinoButton(
           padding: EdgeInsets.zero,
-          onPressed: () => _save(
-            context: context,
-            ref: ref,
-            existing: note,
-            title: titleController.text,
-            body: bodyController.text,
-            lifetimeMinutes: lifetimeMinutes.value,
-            colorTag: colorTag.value,
-          ),
-          child: Text(
-            'Save',
-            style: TextStyle(
-              color: palette.accent,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+          onPressed: saveAndExit,
+          child: Text(isNew ? 'Save' : 'Done', style: TextStyle(color: colors.accent)),
         ),
       ),
       child: SafeArea(
         child: ListView(
-          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-          padding: const EdgeInsets.fromLTRB(20, 18, 20, 36),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 40),
           children: [
-            if (note != null) ...[
-              _CountdownPanel(note: note),
-              const SizedBox(height: 14),
-            ],
-            AppSurface(
+            // Huge countdown
+            Center(
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  CupertinoTextField(
-                    controller: titleController,
-                    placeholder: settings.autoGenerateTitle
-                        ? 'Optional title'
-                        : 'Title',
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    decoration: const BoxDecoration(),
-                    style: TextStyle(
-                      color: palette.text,
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800,
-                    ),
-                    placeholderStyle: TextStyle(
-                      color: palette.mutedText.withValues(alpha: 0.7),
-                      fontSize: 26,
-                      fontWeight: FontWeight.w800,
-                    ),
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 14),
-                  CupertinoSlidingSegmentedControl<bool>(
-                    groupValue: previewMode.value,
-                    thumbColor: palette.accent,
-                    backgroundColor: palette.cardStrong,
-                    children: {
-                      false: _SegmentLabel(
-                        label: 'Edit',
-                        selected: !previewMode.value,
-                      ),
-                      true: _SegmentLabel(
-                        label: 'Preview',
-                        selected: previewMode.value,
-                      ),
-                    },
-                    onValueChanged: (value) {
-                      if (value != null) {
-                        previewMode.value = value;
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 14),
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: previewMode.value
-                        ? _MarkdownPreview(data: bodyController.text)
-                        : CupertinoTextField(
-                            key: const ValueKey('editor'),
-                            controller: bodyController,
-                            minLines: 10,
-                            maxLines: 18,
-                            placeholder: 'What needs to leave your head?',
-                            padding: EdgeInsets.zero,
-                            decoration: const BoxDecoration(),
-                            style: TextStyle(
-                              color: palette.text,
-                              fontSize: 17,
-                              height: 1.34,
-                            ),
-                            placeholderStyle: TextStyle(
-                              color: palette.mutedText.withValues(alpha: 0.68),
-                              fontSize: 17,
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 14),
-            if (isNew) ...[
-              AppSurface(
-                child: LifetimeSlider(
-                  value: lifetimeMinutes.value,
-                  min: minLifetimeMinutes,
-                  max: maxLifetimeMinutes,
-                  presets: lifetimePresets,
-                  onChanged: (value) => lifetimeMinutes.value = value,
-                ),
-              ),
-              const SizedBox(height: 14),
-            ],
-            AppSurface(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'Color tag',
-                    style: TextStyle(
-                      color: palette.text,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
+                    'Expires in',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          color: colors.textSecondary,
+                          letterSpacing: 1.5,
+                        ),
                   ),
-                  const SizedBox(height: 12),
-                  AccentSwatches(
-                    selectedIndex: colorTag.value,
-                    allowNone: true,
-                    onSelected: (value) => colorTag.value = value,
+                  const SizedBox(height: 4),
+                  CountdownHero(
+                    expiresAt: expiresAt,
+                    showSeconds: settings.showSecondsUnderOneHour,
+                    originalLifetimeMinutes: lifetime.value,
                   ),
                 ],
               ),
             ),
-            if (note != null) ...[
-              const SizedBox(height: 14),
-              _NoteActions(note: note),
+
+            const SizedBox(height: 18),
+
+            // Puff / ephemeral visual treatment (steam particles)
+            if (isSteamMode || (note?.isSteamMode ?? false))
+              Container(
+                height: 78,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(18),
+                  color: colors.card.withValues(alpha: 0.6),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: const SteamParticles(intensity: 1.1, dense: true),
+              ),
+
+            // Title field
+            CupertinoTextField(
+              controller: titleCtrl,
+              placeholder: 'Title (optional)',
+              style: Theme.of(context).textTheme.titleLarge,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: colors.card,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: colors.divider),
+              ),
+              onChanged: (_) => {}, // triggers rebuilds via hooks
+            ),
+
+            const SizedBox(height: 12),
+
+            // Body editor / preview
+            Container(
+              decoration: BoxDecoration(
+                color: colors.card,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: colors.divider),
+              ),
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    child: Row(
+                      children: [
+                        // Constrain the segmented control to avoid right overflow on narrow screens.
+                        Flexible(
+                          child: CupertinoSegmentedControl<bool>(
+                            groupValue: showMarkdownPreview.value,
+                            // Explicit colors to prevent theme leakage (e.g. unwanted yellow borders/highlights)
+                            // and ensure it looks correct across all 5 Byepasser themes.
+                            selectedColor: colors.accent,
+                            unselectedColor: colors.cardAlt,
+                            borderColor: colors.divider,
+                            pressedColor: colors.accent.withValues(alpha: 0.2),
+                            children: {
+                              false: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                                child: Text(
+                                  'Edit',
+                                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: showMarkdownPreview.value ? colors.textSecondary : colors.textOnAccent,
+                                      ),
+                                ),
+                              ),
+                              true: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                                child: Text(
+                                  'Preview',
+                                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: showMarkdownPreview.value ? colors.textOnAccent : colors.textSecondary,
+                                      ),
+                                ),
+                              ),
+                            },
+                            onValueChanged: (v) => showMarkdownPreview.value = v,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        if (showMarkdownPreview.value)
+                          Text('Markdown', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: colors.textSecondary)),
+                      ],
+                    ),
+                  ),
+                  const Divider(height: 1),
+                  if (!showMarkdownPreview.value)
+                    CupertinoTextField(
+                      controller: bodyCtrl,
+                      placeholder: 'Write something…\n\nSupports *italic*, **bold**, and simple lists.',
+                      style: Theme.of(context).textTheme.bodyLarge,
+                      maxLines: 12,
+                      minLines: 6,
+                      padding: const EdgeInsets.all(14),
+                      decoration: const BoxDecoration(),
+                    )
+                  else
+                    Container(
+                      height: 220,
+                      padding: const EdgeInsets.all(14),
+                      alignment: Alignment.topLeft,
+                      child: Markdown(
+                        data: bodyCtrl.text.isEmpty ? '_Nothing to preview yet._' : bodyCtrl.text,
+                        selectable: true,
+                        styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
+                          p: Theme.of(context).textTheme.bodyLarge,
+                          listBullet: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // Smart lifetime suggestion (local heuristics — feels AI-powered)
+            if (!isSteamMode && (note?.isSteamMode ?? false) == false)
+              _SmartLifetimeSuggestion(
+                body: bodyCtrl.text,
+                current: lifetime.value,
+                onApply: (suggested) {
+                  lifetime.value = suggested;
+                  haptics.selection();
+                },
+              ),
+
+            // Lifetime
+            LifetimeSlider(
+              valueMinutes: lifetime.value,
+              onChanged: (v) => lifetime.value = v,
+              isSteamMode: isSteamMode || (note?.isSteamMode ?? false),
+            ),
+
+            const SizedBox(height: 22),
+
+            // Color tags
+            Text('Color tag', style: Theme.of(context).textTheme.labelLarge?.copyWith(color: colors.textSecondary)),
+            const SizedBox(height: 8),
+            _ColorTagPicker(
+              selected: selectedTag.value,
+              onSelected: (i) => selectedTag.value = i,
+            ),
+
+            const SizedBox(height: 28),
+
+            // Actions
+            if (!isNew) ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: copyBody,
+                      icon: const Icon(CupertinoIcons.doc_on_clipboard),
+                      label: const Text('Copy'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: shareNote,
+                      icon: const Icon(CupertinoIcons.share),
+                      label: const Text('Share'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              if (canExtend)
+                FilledButton.icon(
+                  onPressed: extendOnce,
+                  icon: const Icon(CupertinoIcons.time),
+                  label: const Text('Extend once (1 day)'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: colors.accent.withValues(alpha: 0.9),
+                  ),
+                ),
+              if (note?.isSteamMode ?? false)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: FilledButton.icon(
+                    onPressed: burnNow,
+                    icon: const Icon(CupertinoIcons.flame),
+                    label: const Text('Burn Now'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: colors.danger,
+                    ),
+                  ),
+                ),
             ],
+
+            if (isNew)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: FilledButton(
+                  onPressed: saveAndExit,
+                  child: Text(isSteamMode ? 'Release a Puff' : 'Create Note'),
+                ),
+              ),
+
+            const SizedBox(height: 40),
           ],
         ),
       ),
     );
   }
-
-  Note? _findNote(List<Note> notes, String? id) {
-    if (id == null) {
-      return null;
-    }
-    for (final note in notes) {
-      if (note.id == id) {
-        return note;
-      }
-    }
-    return null;
-  }
-
-  Future<void> _save({
-    required BuildContext context,
-    required WidgetRef ref,
-    required Note? existing,
-    required String title,
-    required String body,
-    required int lifetimeMinutes,
-    required int? colorTag,
-  }) async {
-    final trimmedBody = body.trimRight();
-    if (trimmedBody.trim().isEmpty) {
-      await _showMessage(context, 'A note needs at least a little body.');
-      return;
-    }
-
-    final controller = ref.read(notesProvider.notifier);
-    if (existing == null) {
-      await controller.createNote(
-        title: title,
-        body: trimmedBody,
-        lifetimeMinutes: lifetimeMinutes,
-        colorTag: colorTag,
-      );
-    } else {
-      await controller.updateNote(
-        existing.copyWith(
-          title: title.trim().isEmpty ? null : title.trim(),
-          body: trimmedBody,
-          colorTag: colorTag,
-        ),
-      );
-    }
-
-    await HapticsService.success(ref.read(settingsProvider));
-    if (context.mounted) {
-      Navigator.of(context).pop();
-    }
-  }
 }
 
-class _CountdownPanel extends ConsumerWidget {
-  const _CountdownPanel({required this.note});
+class CountdownHero extends StatelessWidget {
+  final DateTime expiresAt;
+  final bool showSeconds;
+  final int? originalLifetimeMinutes;
 
-  final Note note;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    return AppSurface(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(child: CountdownText(note: note, huge: true)),
-              if (note.isSteamMode)
-                Icon(CupertinoIcons.flame, color: palette.urgent, size: 30),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            note.extended ? 'Already extended once' : 'until goodbye',
-            style: TextStyle(
-              color: palette.mutedText,
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 16),
-          CupertinoButton(
-            padding: EdgeInsets.zero,
-            onPressed: note.extended
-                ? null
-                : () async {
-                    await ref.read(notesProvider.notifier).extendOnce(note.id);
-                    await HapticsService.success(ref.read(settingsProvider));
-                  },
-            minimumSize: Size(0, 0),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: note.extended
-                    ? palette.cardStrong
-                    : palette.accent.withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: note.extended ? palette.divider : palette.accent,
-                ),
-              ),
-              child: Text(
-                note.extended ? 'Extend used' : 'Extend once',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: note.extended ? palette.mutedText : palette.text,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _NoteActions extends ConsumerWidget {
-  const _NoteActions({required this.note});
-
-  final Note note;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    return AppSurface(
-      child: Column(
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: _ActionButton(
-                  icon: CupertinoIcons.doc_on_doc,
-                  label: 'Copy',
-                  onTap: () async {
-                    await Clipboard.setData(
-                      ClipboardData(text: note.toShareText()),
-                    );
-                    await HapticsService.success(ref.read(settingsProvider));
-                    if (context.mounted) {
-                      await _showMessage(context, 'Copied.');
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ActionButton(
-                  icon: CupertinoIcons.share,
-                  label: 'Share',
-                  onTap: () async {
-                    await SharePlus.instance.share(
-                      ShareParams(
-                        text: note.toShareText(),
-                        subject: note.displayTitle,
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          CupertinoButton(
-            padding: EdgeInsets.zero,
-            onPressed: () => _confirmDelete(context, ref, note),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
-              decoration: BoxDecoration(
-                color: palette.urgent.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(
-                  color: palette.urgent.withValues(alpha: 0.38),
-                ),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    note.isSteamMode
-                        ? CupertinoIcons.flame
-                        : CupertinoIcons.trash,
-                    color: palette.urgent,
-                    size: 19,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    note.isSteamMode ? 'Burn Now' : 'Delete Now',
-                    style: TextStyle(
-                      color: palette.urgent,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ActionButton extends StatelessWidget {
-  const _ActionButton({
-    required this.icon,
-    required this.label,
-    required this.onTap,
+  const CountdownHero({
+    super.key,
+    required this.expiresAt,
+    required this.showSeconds,
+    this.originalLifetimeMinutes,
   });
 
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      onPressed: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
-        decoration: BoxDecoration(
-          color: palette.cardStrong,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: palette.divider),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: palette.text, size: 19),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+    final remaining = expiresAt.difference(DateTime.now());
+    final text = formatRemaining(remaining, showSeconds: showSeconds);
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+
+    final total = (originalLifetimeMinutes ?? 60 * 24).toDouble();
+    final elapsed = total - (remaining.inSeconds / 60.0);
+    final progress = (1.0 - (elapsed / total)).clamp(0.0, 1.0);
+
+    final isCritical = remaining.inMinutes < 15;
+    final isUrgent = remaining.inMinutes < 60;
+
+    final ringColor = isCritical
+        ? colors.danger
+        : isUrgent
+            ? colors.accent
+            : colors.textSecondary.withValues(alpha: 0.4);
+
+    return SizedBox(
+      width: 168,
+      height: 168,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          // Background ring
+          SizedBox.expand(
+            child: CircularProgressIndicator(
+              value: 1.0,
+              strokeWidth: 5,
+              color: colors.divider,
+            ),
+          ),
+          // Progress ring (animated)
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: progress, end: progress),
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeOutCubic,
+            builder: (context, value, _) {
+              return SizedBox.expand(
+                child: CircularProgressIndicator(
+                  value: value,
+                  strokeWidth: 5,
+                  color: ringColor,
+                  strokeCap: StrokeCap.round,
+                ),
+              );
+            },
+          ),
+          // Center content
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                text,
+                style: Theme.of(context).textTheme.displayMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 28,
+                      letterSpacing: -1.0,
+                      color: isCritical ? colors.danger : colors.textPrimary,
+                    ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                isCritical ? 'Almost gone' : isUrgent ? 'Running out' : 'Plenty of time',
                 style: TextStyle(
-                  color: palette.text,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w800,
+                  fontSize: 11,
+                  color: colors.textSecondary,
+                  letterSpacing: 0.5,
                 ),
               ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColorTagPicker extends StatelessWidget {
+  final int? selected;
+  final ValueChanged<int?> onSelected;
+
+  const _ColorTagPicker({required this.selected, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = ByepasserTheme.accentPalette;
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+
+    return Wrap(
+      spacing: 10,
+      runSpacing: 8,
+      children: [
+        for (int i = 0; i < palette.length; i++)
+          GestureDetector(
+            onTap: () => onSelected(selected == i ? null : i),
+            child: Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: palette[i],
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: selected == i ? colors.textPrimary : Colors.transparent,
+                  width: 2.5,
+                ),
+              ),
+              child: selected == i ? Icon(Icons.check, size: 16, color: colors.textOnAccent) : null,
             ),
-          ],
+          ),
+        GestureDetector(
+          onTap: () => onSelected(null),
+          child: Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: colors.divider, width: 1.5),
+            ),
+            child: Icon(Icons.block, size: 16, color: colors.textSecondary),
+          ),
         ),
-      ),
+      ],
     );
   }
 }
 
-class _SegmentLabel extends StatelessWidget {
-  const _SegmentLabel({required this.label, required this.selected});
+class _SmartLifetimeSuggestion extends StatelessWidget {
+  final String body;
+  final int current;
+  final ValueChanged<int> onApply;
 
-  final String label;
-  final bool selected;
+  const _SmartLifetimeSuggestion({
+    required this.body,
+    required this.current,
+    required this.onApply,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final suggested = suggestLifetimeMinutes(body);
+    final reason = getSuggestionReason(body);
+
+    if ((suggested - current).abs() < 5) return const SizedBox.shrink();
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: selected ? palette.onAccent : palette.text,
-          fontWeight: FontWeight.w800,
-          fontSize: 14,
+      padding: const EdgeInsets.only(bottom: 10),
+      child: GestureDetector(
+        onTap: () => onApply(suggested),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: colors.accent.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: colors.accent.withValues(alpha: 0.25)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.auto_awesome, size: 15, color: colors.accent),
+              const SizedBox(width: 6),
+              Text(
+                'Smart: ${formatFullLifetime(suggested)}',
+                style: TextStyle(
+                  color: colors.accent,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '• $reason',
+                style: TextStyle(
+                  color: colors.textSecondary,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
 
-class _MarkdownPreview extends StatelessWidget {
-  const _MarkdownPreview({required this.data});
+/// Pragmatic store facade (duplicated for self-contained file)
+class _SimpleStoreFacade {
+  Box<Note> get notesBox => Hive.box<Note>('notes');
+  Box<AppSettings> get settingsBox => Hive.box<AppSettings>('settings');
 
-  final String data;
+  AppSettings get settings => settingsBox.get('user') ?? AppSettings.defaults();
 
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    final content = data.trim().isEmpty ? '_Nothing here yet._' : data;
-    return ConstrainedBox(
-      key: const ValueKey('preview'),
-      constraints: const BoxConstraints(minHeight: 240),
-      child: MarkdownBody(
-        data: content,
-        selectable: true,
-        styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
-          p: TextStyle(color: palette.text, fontSize: 17, height: 1.36),
-          h1: TextStyle(
-            color: palette.text,
-            fontSize: 28,
-            fontWeight: FontWeight.w800,
-          ),
-          h2: TextStyle(
-            color: palette.text,
-            fontSize: 23,
-            fontWeight: FontWeight.w800,
-          ),
-          blockquote: TextStyle(color: palette.mutedText, fontSize: 17),
-          code: TextStyle(
-            color: palette.text,
-            backgroundColor: palette.cardStrong,
-          ),
-          a: TextStyle(color: palette.accent),
-        ),
-      ),
-    );
-  }
-}
-
-Future<void> _confirmDelete(
-  BuildContext context,
-  WidgetRef ref,
-  Note note,
-) async {
-  final confirmed = await showCupertinoDialog<bool>(
-    context: context,
-    builder: (context) {
-      return CupertinoAlertDialog(
-        title: Text(note.isSteamMode ? 'Burn now?' : 'Delete this note?'),
-        content: const Text('This removes it from local storage immediately.'),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          CupertinoDialogAction(
-            isDestructiveAction: true,
-            onPressed: () => Navigator.of(context).pop(true),
-            child: Text(note.isSteamMode ? 'Burn' : 'Delete'),
-          ),
-        ],
-      );
-    },
-  );
-
-  if (confirmed != true) {
-    return;
+  Future<int> sweepExpiredNotes() async {
+    final now = DateTime.now();
+    final toRemove = notesBox.values.where((n) => now.isAfter(n.expiresAt)).toList();
+    for (final n in toRemove) {
+      await notesBox.delete(n.id);
+    }
+    return toRemove.length;
   }
 
-  await ref.read(notesProvider.notifier).deleteNote(note.id);
-  await HapticsService.success(ref.read(settingsProvider));
-  if (!context.mounted) {
-    return;
+  Future<Note> addNote(Note note) async {
+    await notesBox.put(note.id, note);
+    return note;
   }
 
-  if (note.isSteamMode) {
-    await showCupertinoDialog<void>(
-      context: context,
-      builder: (_) => const SteamReleasedDialog(),
-    );
+  Future<Note> updateNote(Note note) async {
+    await notesBox.put(note.id, note);
+    return note;
   }
 
-  if (context.mounted) {
-    Navigator.of(context).pop();
-  }
-}
+  Future<void> deleteNote(String id) async => notesBox.delete(id);
 
-Future<void> _showMessage(BuildContext context, String message) {
-  return showCupertinoDialog<void>(
-    context: context,
-    builder: (context) {
-      return CupertinoAlertDialog(
-        content: Text(message),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      );
-    },
-  );
+  Future<void> deleteAllNotes() async => notesBox.clear();
+
+  List<Note> getAllNotesSorted() {
+    final l = notesBox.values.toList();
+    l.sort((a, b) {
+      final orderCompare = a.orderIndex.compareTo(b.orderIndex);
+      if (orderCompare != 0) return orderCompare;
+      return a.compareExpiry(b);
+    });
+    return l;
+  }
+
+  List<Note> getDyingSoonNotes({Duration threshold = const Duration(hours: 6)}) => [];
+
+  int get noteCount => notesBox.length;
+
+  Future<void> updateSettings(AppSettings s) async => settingsBox.put('user', s);
 }

@@ -1,105 +1,62 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/byepasser_theme.dart';
 
+/// Horizontal scrollable accent color picker used in Settings.
 class AccentSwatches extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
   const AccentSwatches({
     super.key,
     required this.selectedIndex,
     required this.onSelected,
-    this.allowNone = false,
   });
-
-  final int? selectedIndex;
-  final ValueChanged<int?> onSelected;
-  final bool allowNone;
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    final entries = <Widget>[];
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    final palette = ByepasserTheme.accentPalette;
 
-    if (allowNone) {
-      entries.add(
-        _SwatchButton(
-          selected: selectedIndex == null,
-          label: 'No color',
-          child: Icon(
-            CupertinoIcons.slash_circle,
-            color: palette.mutedText,
-            size: 22,
-          ),
-          onTap: () => onSelected(null),
-        ),
-      );
-    }
-
-    for (var i = 0; i < ByepasserTheme.accentColors.length; i++) {
-      final color = ByepasserTheme.accentColors[i];
-      entries.add(
-        _SwatchButton(
-          selected: selectedIndex == i,
-          label: 'Color ${i + 1}',
-          onTap: () => onSelected(i),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: palette.isDark
-                    ? Colors.white.withValues(alpha: 0.18)
-                    : Colors.black.withValues(alpha: 0.08),
+    return SizedBox(
+      height: 52,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        itemCount: palette.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 12),
+        itemBuilder: (context, i) {
+          final c = palette[i];
+          final isSel = i == selectedIndex;
+          return GestureDetector(
+            onTap: () => onSelected(i),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 160),
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: c,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isSel ? colors.textPrimary : Colors.transparent,
+                  width: isSel ? 2.5 : 0,
+                ),
+                boxShadow: isSel
+                    ? [
+                        BoxShadow(
+                          color: c.withValues(alpha: 0.45),
+                          blurRadius: 14,
+                          spreadRadius: 1,
+                        )
+                      ]
+                    : null,
               ),
+              child: isSel
+                  ? Icon(Icons.check, size: 18, color: colors.textOnAccent)
+                  : null,
             ),
-            child: const SizedBox(width: 28, height: 28),
-          ),
-        ),
-      );
-    }
-
-    return Wrap(spacing: 10, runSpacing: 10, children: entries);
-  }
-}
-
-class _SwatchButton extends StatelessWidget {
-  const _SwatchButton({
-    required this.selected,
-    required this.label,
-    required this.child,
-    required this.onTap,
-  });
-
-  final bool selected;
-  final String label;
-  final Widget child;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: label,
-      child: CupertinoButton(
-        padding: EdgeInsets.zero,
-        onPressed: onTap,
-        minimumSize: Size(0, 0),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 160),
-          width: 44,
-          height: 44,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(
-              width: selected ? 2.4 : 1,
-              color: selected ? palette.accent : palette.divider,
-            ),
-          ),
-          child: child,
-        ),
+          );
+        },
       ),
     );
   }

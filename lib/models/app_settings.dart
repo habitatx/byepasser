@@ -1,76 +1,75 @@
 import 'package:hive/hive.dart';
 
-class ThemeKeys {
-  static const whiteCanvas = 'whiteCanvas';
-  static const softIvory = 'softIvory';
-  static const neutralMist = 'neutralMist';
-  static const deepDusk = 'deepDusk';
-  static const obsidianVoid = 'obsidianVoid';
-  static const followSystem = 'followSystem';
+const int settingsTypeId = 1;
 
-  static const all = [
-    whiteCanvas,
-    softIvory,
-    neutralMist,
-    deepDusk,
-    obsidianVoid,
-    followSystem,
-  ];
-}
+/// All user-configurable settings. Persisted in a dedicated Hive box.
+@HiveType(typeId: settingsTypeId)
+class AppSettings extends HiveObject {
+  @HiveField(0)
+  final String themeKey; // e.g. "whiteCanvas", "deepDusk", or "followSystem"
 
-class CardStyles {
-  static const glassmorphic = 'glassmorphic';
-  static const minimal = 'minimal';
-  static const elevated = 'elevated';
+  @HiveField(1)
+  final int accentIndex; // 0-7
 
-  static const all = [glassmorphic, minimal, elevated];
-}
+  @HiveField(2)
+  final String cardStyle; // "glassmorphic", "minimal", "elevated"
 
-class HapticIntensity {
-  static const off = 'off';
-  static const soft = 'soft';
-  static const medium = 'medium';
-  static const bright = 'bright';
+  @HiveField(3)
+  final int defaultLifetimeMinutes; // 5 - 43200
 
-  static const all = [off, soft, medium, bright];
-}
+  @HiveField(4)
+  final int defaultSteamLifetimeMinutes; // 5 - 30
 
-class AnimationSpeeds {
-  static const subtle = 'subtle';
-  static const normal = 'normal';
-  static const playful = 'playful';
+  @HiveField(5)
+  final bool autoGenerateTitle;
 
-  static const all = [subtle, normal, playful];
-}
+  @HiveField(6)
+  final bool showSecondsUnderOneHour;
 
-class AppSettings {
-  const AppSettings({
-    this.themeKey = ThemeKeys.whiteCanvas,
-    this.accentIndex = 0,
-    this.cardStyle = CardStyles.glassmorphic,
-    this.defaultLifetimeMinutes = 10080,
-    this.defaultSteamLifetimeMinutes = 15,
-    this.autoGenerateTitle = true,
-    this.showSecondsUnderHour = true,
-    this.gentleNotifications = true,
-    this.autoCopyBeforeDeletion = false,
-    this.hapticIntensity = HapticIntensity.soft,
-    this.animationSpeed = AnimationSpeeds.normal,
-    this.showNoteCountInTabBar = true,
+  @HiveField(7)
+  final bool gentleNotifications;
+
+  @HiveField(8)
+  final bool autoCopyBeforeDeletion;
+
+  @HiveField(9)
+  final int hapticsIntensity; // 0 = off, 1 = light, 2 = medium, 3 = strong
+
+  @HiveField(10)
+  final String animationSpeed; // "subtle", "normal", "playful"
+
+  @HiveField(11)
+  final bool showNoteCountInTabBar;
+
+  AppSettings({
+    required this.themeKey,
+    required this.accentIndex,
+    required this.cardStyle,
+    required this.defaultLifetimeMinutes,
+    required this.defaultSteamLifetimeMinutes,
+    required this.autoGenerateTitle,
+    required this.showSecondsUnderOneHour,
+    required this.gentleNotifications,
+    required this.autoCopyBeforeDeletion,
+    required this.hapticsIntensity,
+    required this.animationSpeed,
+    required this.showNoteCountInTabBar,
   });
 
-  final String themeKey;
-  final int accentIndex;
-  final String cardStyle;
-  final int defaultLifetimeMinutes;
-  final int defaultSteamLifetimeMinutes;
-  final bool autoGenerateTitle;
-  final bool showSecondsUnderHour;
-  final bool gentleNotifications;
-  final bool autoCopyBeforeDeletion;
-  final String hapticIntensity;
-  final String animationSpeed;
-  final bool showNoteCountInTabBar;
+  factory AppSettings.defaults() => AppSettings(
+        themeKey: ThemeKeys.whiteCanvas,
+        accentIndex: 0,
+        cardStyle: CardStyles.glassmorphic,
+        defaultLifetimeMinutes: 7 * 24 * 60, // 7 days
+        defaultSteamLifetimeMinutes: 15,
+        autoGenerateTitle: true,
+        showSecondsUnderOneHour: true,
+        gentleNotifications: true,
+        autoCopyBeforeDeletion: true,
+        hapticsIntensity: 2,
+        animationSpeed: AnimationSpeeds.normal,
+        showNoteCountInTabBar: true,
+      );
 
   AppSettings copyWith({
     String? themeKey,
@@ -79,10 +78,10 @@ class AppSettings {
     int? defaultLifetimeMinutes,
     int? defaultSteamLifetimeMinutes,
     bool? autoGenerateTitle,
-    bool? showSecondsUnderHour,
+    bool? showSecondsUnderOneHour,
     bool? gentleNotifications,
     bool? autoCopyBeforeDeletion,
-    String? hapticIntensity,
+    int? hapticsIntensity,
     String? animationSpeed,
     bool? showNoteCountInTabBar,
   }) {
@@ -90,65 +89,135 @@ class AppSettings {
       themeKey: themeKey ?? this.themeKey,
       accentIndex: accentIndex ?? this.accentIndex,
       cardStyle: cardStyle ?? this.cardStyle,
-      defaultLifetimeMinutes:
-          defaultLifetimeMinutes ?? this.defaultLifetimeMinutes,
+      defaultLifetimeMinutes: defaultLifetimeMinutes ?? this.defaultLifetimeMinutes,
       defaultSteamLifetimeMinutes:
           defaultSteamLifetimeMinutes ?? this.defaultSteamLifetimeMinutes,
       autoGenerateTitle: autoGenerateTitle ?? this.autoGenerateTitle,
-      showSecondsUnderHour: showSecondsUnderHour ?? this.showSecondsUnderHour,
+      showSecondsUnderOneHour:
+          showSecondsUnderOneHour ?? this.showSecondsUnderOneHour,
       gentleNotifications: gentleNotifications ?? this.gentleNotifications,
-      autoCopyBeforeDeletion:
-          autoCopyBeforeDeletion ?? this.autoCopyBeforeDeletion,
-      hapticIntensity: hapticIntensity ?? this.hapticIntensity,
+      autoCopyBeforeDeletion: autoCopyBeforeDeletion ?? this.autoCopyBeforeDeletion,
+      hapticsIntensity: hapticsIntensity ?? this.hapticsIntensity,
       animationSpeed: animationSpeed ?? this.animationSpeed,
-      showNoteCountInTabBar:
-          showNoteCountInTabBar ?? this.showNoteCountInTabBar,
+      showNoteCountInTabBar: showNoteCountInTabBar ?? this.showNoteCountInTabBar,
     );
-  }
-
-  Map<String, dynamic> toJson() {
-    return {
-      'themeKey': themeKey,
-      'accentIndex': accentIndex,
-      'cardStyle': cardStyle,
-      'defaultLifetimeMinutes': defaultLifetimeMinutes,
-      'defaultSteamLifetimeMinutes': defaultSteamLifetimeMinutes,
-      'autoGenerateTitle': autoGenerateTitle,
-      'showSecondsUnderHour': showSecondsUnderHour,
-      'gentleNotifications': gentleNotifications,
-      'autoCopyBeforeDeletion': autoCopyBeforeDeletion,
-      'hapticIntensity': hapticIntensity,
-      'animationSpeed': animationSpeed,
-      'showNoteCountInTabBar': showNoteCountInTabBar,
-    };
   }
 }
 
+class ThemeKeys {
+  static const String followSystem = 'followSystem';
+  static const String whiteCanvas = 'whiteCanvas';
+  static const String softIvory = 'softIvory';
+  static const String neutralMist = 'neutralMist';
+  static const String deepDusk = 'deepDusk';
+  static const String obsidianVoid = 'obsidianVoid';
+
+  static const List<String> all = [
+    followSystem,
+    whiteCanvas,
+    softIvory,
+    neutralMist,
+    deepDusk,
+    obsidianVoid,
+  ];
+
+  static String labelFor(String key) {
+    switch (key) {
+      case followSystem:
+        return 'Follow System';
+      case whiteCanvas:
+        return 'White Canvas';
+      case softIvory:
+        return 'Soft Ivory';
+      case neutralMist:
+        return 'Neutral Mist';
+      case deepDusk:
+        return 'Deep Dusk';
+      case obsidianVoid:
+        return 'Obsidian Void';
+      default:
+        return 'White Canvas';
+    }
+  }
+}
+
+class CardStyles {
+  static const String glassmorphic = 'glassmorphic';
+  static const String minimal = 'minimal';
+  static const String elevated = 'elevated';
+
+  static const List<String> all = [glassmorphic, minimal, elevated];
+
+  static String labelFor(String style) {
+    switch (style) {
+      case glassmorphic:
+        return 'Glassmorphic';
+      case minimal:
+        return 'Minimal';
+      case elevated:
+        return 'Elevated';
+      default:
+        return 'Glassmorphic';
+    }
+  }
+}
+
+class AnimationSpeeds {
+  static const String subtle = 'subtle';
+  static const String normal = 'normal';
+  static const String playful = 'playful';
+
+  static const List<String> all = [subtle, normal, playful];
+
+  static String labelFor(String speed) {
+    switch (speed) {
+      case subtle:
+        return 'Subtle';
+      case normal:
+        return 'Normal';
+      case playful:
+        return 'Playful';
+      default:
+        return 'Normal';
+    }
+  }
+
+  static double getScale(String speed) {
+    switch (speed) {
+      case subtle:
+        return 0.7;
+      case playful:
+        return 1.35;
+      default:
+        return 1.0;
+    }
+  }
+}
+
+/// Manual adapter for AppSettings (no codegen dependency)
 class AppSettingsAdapter extends TypeAdapter<AppSettings> {
   @override
-  final int typeId = 2;
+  final int typeId = settingsTypeId;
 
   @override
   AppSettings read(BinaryReader reader) {
-    final fields = <int, dynamic>{};
-    final fieldCount = reader.readByte();
-    for (var i = 0; i < fieldCount; i++) {
-      fields[reader.readByte()] = reader.read();
-    }
-
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
     return AppSettings(
-      themeKey: fields[0] as String? ?? ThemeKeys.whiteCanvas,
-      accentIndex: fields[1] as int? ?? 0,
-      cardStyle: fields[2] as String? ?? CardStyles.glassmorphic,
-      defaultLifetimeMinutes: fields[3] as int? ?? 10080,
-      defaultSteamLifetimeMinutes: fields[4] as int? ?? 15,
-      autoGenerateTitle: fields[5] as bool? ?? true,
-      showSecondsUnderHour: fields[6] as bool? ?? true,
-      gentleNotifications: fields[7] as bool? ?? true,
-      autoCopyBeforeDeletion: fields[8] as bool? ?? false,
-      hapticIntensity: fields[9] as String? ?? HapticIntensity.soft,
-      animationSpeed: fields[10] as String? ?? AnimationSpeeds.normal,
-      showNoteCountInTabBar: fields[11] as bool? ?? true,
+      themeKey: fields[0] as String,
+      accentIndex: fields[1] as int,
+      cardStyle: fields[2] as String,
+      defaultLifetimeMinutes: fields[3] as int,
+      defaultSteamLifetimeMinutes: fields[4] as int,
+      autoGenerateTitle: fields[5] as bool,
+      showSecondsUnderOneHour: fields[6] as bool,
+      gentleNotifications: fields[7] as bool,
+      autoCopyBeforeDeletion: fields[8] as bool,
+      hapticsIntensity: fields[9] as int,
+      animationSpeed: fields[10] as String,
+      showNoteCountInTabBar: fields[11] as bool,
     );
   }
 
@@ -169,16 +238,26 @@ class AppSettingsAdapter extends TypeAdapter<AppSettings> {
       ..writeByte(5)
       ..write(obj.autoGenerateTitle)
       ..writeByte(6)
-      ..write(obj.showSecondsUnderHour)
+      ..write(obj.showSecondsUnderOneHour)
       ..writeByte(7)
       ..write(obj.gentleNotifications)
       ..writeByte(8)
       ..write(obj.autoCopyBeforeDeletion)
       ..writeByte(9)
-      ..write(obj.hapticIntensity)
+      ..write(obj.hapticsIntensity)
       ..writeByte(10)
       ..write(obj.animationSpeed)
       ..writeByte(11)
       ..write(obj.showNoteCountInTabBar);
   }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AppSettingsAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
 }

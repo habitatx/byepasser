@@ -1,124 +1,149 @@
 import 'package:hive/hive.dart';
+import 'package:uuid/uuid.dart';
 
-const Object _unset = Object();
+const int noteTypeId = 0;
 
-class Note {
-  const Note({
+@HiveType(typeId: noteTypeId)
+class Note extends HiveObject {
+  @HiveField(0)
+  final String id;
+
+  @HiveField(1)
+  final String? title;
+
+  @HiveField(2)
+  final String body;
+
+  @HiveField(3)
+  final DateTime createdAt;
+
+  @HiveField(4)
+  final DateTime expiresAt;
+
+  @HiveField(5)
+  final int lifetimeMinutes;
+
+  @HiveField(6)
+  final bool extended;
+
+  @HiveField(7)
+  final bool isSteamMode;
+
+  @HiveField(8)
+  final int? colorTag; // 0-7 optional
+
+  @HiveField(9)
+  final int indentLevel;
+
+  @HiveField(10)
+  final double? cardHeight; // for vertical stretch via handle
+
+  @HiveField(11)
+  final int orderIndex;
+
+  Note({
     required this.id,
+    required this.title,
     required this.body,
     required this.createdAt,
     required this.expiresAt,
     required this.lifetimeMinutes,
-    this.title,
-    this.extended = false,
-    this.isSteamMode = false,
+    required this.extended,
+    required this.isSteamMode,
     this.colorTag,
+    this.indentLevel = 0,
+    this.cardHeight,
+    this.orderIndex = 0,
   });
 
-  final String id;
-  final String? title;
-  final String body;
-  final DateTime createdAt;
-  final DateTime expiresAt;
-  final int lifetimeMinutes;
-  final bool extended;
-  final bool isSteamMode;
-  final int? colorTag;
-
-  bool get isExpired => DateTime.now().isAfter(expiresAt);
-
-  String get displayTitle {
-    final trimmedTitle = title?.trim();
-    if (trimmedTitle != null && trimmedTitle.isNotEmpty) {
-      return trimmedTitle;
-    }
-
-    final firstLine = body
-        .split('\n')
-        .map((line) => line.trim())
-        .firstWhere((line) => line.isNotEmpty, orElse: () => '');
-    if (firstLine.isEmpty) {
-      return 'Untitled note';
-    }
-    return firstLine.length <= 48
-        ? firstLine
-        : '${firstLine.substring(0, 45)}...';
+  /// Create a new note. If title is null/empty, it will be auto-generated on the UI layer from body.
+  factory Note.create({
+    required String body,
+    required int lifetimeMinutes,
+    String? title,
+    bool isSteamMode = false,
+    int? colorTag,
+    int indentLevel = 0,
+    int orderIndex = 0,
+  }) {
+    final now = DateTime.now();
+    final expires = now.add(Duration(minutes: lifetimeMinutes));
+    return Note(
+      id: const Uuid().v4(),
+      title: (title != null && title.trim().isNotEmpty) ? title.trim() : null,
+      body: body.trim(),
+      createdAt: now,
+      expiresAt: expires,
+      lifetimeMinutes: lifetimeMinutes,
+      extended: false,
+      isSteamMode: isSteamMode,
+      colorTag: colorTag,
+      indentLevel: indentLevel,
+      orderIndex: orderIndex,
+      cardHeight: null,
+    );
   }
-
-  String get preview {
-    final compact = body
-        .replaceAll(RegExp(r'[#*_>`\[\]()]'), '')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (compact.isEmpty) {
-      return 'Nothing here yet.';
-    }
-    return compact.length <= 150 ? compact : '${compact.substring(0, 147)}...';
-  }
-
-  Duration remainingFrom(DateTime now) => expiresAt.difference(now);
 
   Note copyWith({
-    Object? title = _unset,
+    String? title,
     String? body,
-    DateTime? createdAt,
     DateTime? expiresAt,
     int? lifetimeMinutes,
     bool? extended,
     bool? isSteamMode,
-    Object? colorTag = _unset,
+    int? colorTag,
+    int? indentLevel,
+    double? cardHeight,
+    int? orderIndex,
   }) {
     return Note(
       id: id,
-      title: identical(title, _unset) ? this.title : title as String?,
+      title: title ?? this.title,
       body: body ?? this.body,
-      createdAt: createdAt ?? this.createdAt,
+      createdAt: createdAt,
       expiresAt: expiresAt ?? this.expiresAt,
       lifetimeMinutes: lifetimeMinutes ?? this.lifetimeMinutes,
       extended: extended ?? this.extended,
       isSteamMode: isSteamMode ?? this.isSteamMode,
-      colorTag: identical(colorTag, _unset) ? this.colorTag : colorTag as int?,
+      colorTag: colorTag ?? this.colorTag,
+      indentLevel: indentLevel ?? this.indentLevel,
+      cardHeight: cardHeight ?? this.cardHeight,
+      orderIndex: orderIndex ?? this.orderIndex,
     );
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'title': title,
-      'body': body,
-      'createdAt': createdAt.toIso8601String(),
-      'expiresAt': expiresAt.toIso8601String(),
-      'lifetimeMinutes': lifetimeMinutes,
-      'extended': extended,
-      'isSteamMode': isSteamMode,
-      'colorTag': colorTag,
-    };
+  /// Effective display title: provided title or first non-empty line of body (max ~48 chars)
+  String get displayTitle {
+    if (title != null && title!.isNotEmpty) return title!;
+    final firstLine = body.split('\n').firstWhere(
+          (l) => l.trim().isNotEmpty,
+          orElse: () => 'Untitled note',
+        );
+    final cleaned = firstLine.trim();
+    if (cleaned.length <= 48) return cleaned;
+    return '${cleaned.substring(0, 45)}...';
   }
 
-  String toShareText() {
-    return [
-      displayTitle,
-      '',
-      body,
-      '',
-      'Expires: ${expiresAt.toLocal()}',
-      'Shared from Byepasser - Notes that say bye.',
-    ].join('\n');
-  }
+  bool get isExpired => DateTime.now().isAfter(expiresAt);
+
+  Duration get remaining => expiresAt.difference(DateTime.now());
+
+  /// For sorting: soonest to expire first
+  int compareExpiry(Note other) => expiresAt.compareTo(other.expiresAt);
 }
 
+/// Manual Hive TypeAdapter so we don't require build_runner on first run.
+/// This keeps the project immediately buildable and runnable.
 class NoteAdapter extends TypeAdapter<Note> {
   @override
-  final int typeId = 1;
+  final int typeId = noteTypeId;
 
   @override
   Note read(BinaryReader reader) {
-    final fields = <int, dynamic>{};
-    final fieldCount = reader.readByte();
-    for (var i = 0; i < fieldCount; i++) {
-      fields[reader.readByte()] = reader.read();
-    }
-
+    final numOfFields = reader.readByte();
+    final fields = <int, dynamic>{
+      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+    };
     return Note(
       id: fields[0] as String,
       title: fields[1] as String?,
@@ -126,16 +151,19 @@ class NoteAdapter extends TypeAdapter<Note> {
       createdAt: fields[3] as DateTime,
       expiresAt: fields[4] as DateTime,
       lifetimeMinutes: fields[5] as int,
-      extended: fields[6] as bool? ?? false,
-      isSteamMode: fields[7] as bool? ?? false,
+      extended: fields[6] as bool,
+      isSteamMode: fields[7] as bool,
       colorTag: fields[8] as int?,
+      indentLevel: (fields[9] as int?) ?? 0,
+      cardHeight: fields[10] as double?,
+      orderIndex: (fields[11] as int?) ?? 0,
     );
   }
 
   @override
   void write(BinaryWriter writer, Note obj) {
     writer
-      ..writeByte(9)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -153,6 +181,22 @@ class NoteAdapter extends TypeAdapter<Note> {
       ..writeByte(7)
       ..write(obj.isSteamMode)
       ..writeByte(8)
-      ..write(obj.colorTag);
+      ..write(obj.colorTag)
+      ..writeByte(9)
+      ..write(obj.indentLevel)
+      ..writeByte(10)
+      ..write(obj.cardHeight)
+      ..writeByte(11)
+      ..write(obj.orderIndex);
   }
+
+  @override
+  int get hashCode => typeId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is NoteAdapter &&
+          runtimeType == other.runtimeType &&
+          typeId == other.typeId;
 }

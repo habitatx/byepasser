@@ -1,584 +1,504 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
-import 'package:share_plus/share_plus.dart';
 
 import '../models/app_settings.dart';
+import '../models/note.dart';
 import '../providers/app_providers.dart';
-import '../services/haptics_service.dart';
+import '../services/export_service.dart';
 import '../theme/byepasser_theme.dart';
-import '../utils/lifetime.dart';
 import '../widgets/accent_swatches.dart';
-import '../widgets/app_surface.dart';
 import '../widgets/lifetime_slider.dart';
 
-class SettingsScreen extends ConsumerWidget {
+/// Comprehensive Settings screen.
+/// Appearance, Default Behavior, Expiry Behavior, Privacy & Cleanup, Advanced.
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    final settings = ref.watch(settingsProvider);
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  late AppSettings _draft;
+
+  @override
+  void initState() {
+    super.initState();
+    _draft = ref.read(settingsProvider);
+  }
+
+  Future<void> _persist() async {
+    // Persist to Hive (settingsProvider reads directly from the box)
+    final store = _SimpleStoreFacade();
+    await store.updateSettings(_draft);
+
+    // Re-schedule notifications based on new gentle setting
+    final notif = ref.read(notificationServiceProvider);
+    if (_draft.gentleNotifications) {
+      for (final n in store.getAllNotesSorted()) {
+        await notif.scheduleExpiryReminders(n, _draft);
+      }
+    } else {
+      await notif.cancelAll();
+    }
+
+    setState(() {}); // refresh local draft view
+  }
+
+  Future<void> _nukeAll() async {
+    final confirmed = await showCupertinoDialog<bool>(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text('Nuke all notes?'),
+        content: const Text('This permanently deletes every note. This action cannot be undone.'),
+        actions: [
+          CupertinoDialogAction(child: const Text('Cancel'), onPressed: () => Navigator.of(ctx).pop(false)),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Nuke Everything'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final store = _SimpleStoreFacade();
+      await store.deleteAllNotes();
+      await ref.read(notificationServiceProvider).cancelAll();
+      // Invalidate so any screen watching the notes list (e.g. the board) picks up the change.
+      ref.invalidate(notesProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All notes deleted.')));
+      }
+    }
+  }
+
+  Future<void> _exportAll() async {
+    final store = _SimpleStoreFacade();
+    final notes = store.getAllNotesSorted();
+    final ok = await ExportService.exportAndShare(notes);
+    if (mounted && ok) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Export shared.')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
 
     return CupertinoPageScaffold(
-      backgroundColor: palette.background,
-      child: CustomScrollView(
-        slivers: [
-          CupertinoSliverNavigationBar(
-            largeTitle: const Text('Settings'),
-            backgroundColor: palette.background.withValues(alpha: 0.82),
-            border: Border(bottom: BorderSide(color: palette.divider)),
-          ),
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(20, 4, 20, 110),
-            sliver: SliverList.list(
-              children: [
-                _SettingsSection(
-                  title: 'Appearance',
-                  children: [
-                    _ThemePicker(settings: settings),
-                    _Divider(),
-                    _SettingsBlockLabel('Accent color'),
-                    const SizedBox(height: 12),
-                    AccentSwatches(
-                      selectedIndex: settings.accentIndex,
-                      onSelected: (index) async {
-                        if (index == null) {
-                          return;
-                        }
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .setAccent(index);
-                      },
-                    ),
-                    _Divider(),
-                    _SegmentedSetting(
-                      label: 'Card style',
-                      value: settings.cardStyle,
-                      values: CardStyles.all,
-                      labelFor: ByepasserTheme.cardStyleLabel,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .setCardStyle(value);
-                      },
-                    ),
-                  ],
-                ),
-                _SettingsSection(
-                  title: 'Default Behavior',
-                  children: [
-                    LifetimeSlider(
-                      value: settings.defaultLifetimeMinutes,
-                      min: minLifetimeMinutes,
-                      max: maxLifetimeMinutes,
-                      presets: lifetimePresets,
-                      label: 'Default lifetime',
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .setDefaultLifetime(value);
-                      },
-                    ),
-                    _Divider(),
-                    LifetimeSlider(
-                      value: settings.defaultSteamLifetimeMinutes,
-                      min: minSteamLifetimeMinutes,
-                      max: maxSteamLifetimeMinutes,
-                      presets: steamLifetimePresets,
-                      label: 'Default Steam lifetime',
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .setDefaultSteamLifetime(value);
-                      },
-                    ),
-                    _Divider(),
-                    _SwitchSetting(
-                      label: 'Auto-generate title',
-                      value: settings.autoGenerateTitle,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(
-                              settings.copyWith(autoGenerateTitle: value),
-                            );
-                      },
-                    ),
-                  ],
-                ),
-                _SettingsSection(
-                  title: 'Expiry Behavior',
-                  children: [
-                    _SwitchSetting(
-                      label: 'Show seconds under 1 hour',
-                      value: settings.showSecondsUnderHour,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(
-                              settings.copyWith(showSecondsUnderHour: value),
-                            );
-                      },
-                    ),
-                    _Divider(),
-                    _SwitchSetting(
-                      label: 'Gentle expiry notifications',
-                      value: settings.gentleNotifications,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(
-                              settings.copyWith(gentleNotifications: value),
-                            );
-                        await ref
-                            .read(notesProvider.notifier)
-                            .syncNotifications();
-                      },
-                    ),
-                    _Divider(),
-                    _SwitchSetting(
-                      label: 'Auto-copy 5 min before deletion',
-                      value: settings.autoCopyBeforeDeletion,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(
-                              settings.copyWith(autoCopyBeforeDeletion: value),
-                            );
-                      },
-                    ),
-                  ],
-                ),
-                _SettingsSection(
-                  title: 'Privacy & Cleanup',
-                  children: [
-                    _StaticSetting(
-                      label: 'Auto-clean expired notes',
-                      value: 'Always on',
-                    ),
-                    _Divider(),
-                    _DangerButton(
-                      label: 'Nuke all notes',
-                      onPressed: () => _confirmNuke(context, ref),
-                    ),
-                  ],
-                ),
-                _SettingsSection(
-                  title: 'Advanced',
-                  children: [
-                    _SegmentedSetting(
-                      label: 'Haptics',
-                      value: settings.hapticIntensity,
-                      values: HapticIntensity.all,
-                      labelFor: ByepasserTheme.hapticLabel,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(settings.copyWith(hapticIntensity: value));
-                        await HapticsService.tap(ref.read(settingsProvider));
-                      },
-                    ),
-                    _Divider(),
-                    _SegmentedSetting(
-                      label: 'Animation speed',
-                      value: settings.animationSpeed,
-                      values: AnimationSpeeds.all,
-                      labelFor: ByepasserTheme.speedLabel,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(settings.copyWith(animationSpeed: value));
-                      },
-                    ),
-                    _Divider(),
-                    _SwitchSetting(
-                      label: 'Show note count in tab bar',
-                      value: settings.showNoteCountInTabBar,
-                      onChanged: (value) async {
-                        await ref
-                            .read(settingsProvider.notifier)
-                            .update(
-                              settings.copyWith(showNoteCountInTabBar: value),
-                            );
-                      },
-                    ),
-                    _Divider(),
-                    _ActionSetting(
-                      icon: CupertinoIcons.square_arrow_up,
-                      label: 'Export all notes as JSON',
-                      onPressed: () => _export(context, ref),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
+      backgroundColor: colors.background,
+      navigationBar: const CupertinoNavigationBar(
+        middle: Text('Settings'),
+        border: null,
       ),
-    );
-  }
-}
+      child: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          children: [
+            _SectionHeader('Appearance'),
 
-class _ThemePicker extends ConsumerWidget {
-  const _ThemePicker({required this.settings});
-
-  final AppSettings settings;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
-    return Column(
-      children: ThemeKeys.all.map((key) {
-        final selected = settings.themeKey == key;
-        return CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: () async {
-            await ref.read(settingsProvider.notifier).setTheme(key);
-          },
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    ByepasserTheme.themeLabel(key),
-                    style: TextStyle(
-                      color: palette.text,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ),
-                Icon(
-                  selected
-                      ? CupertinoIcons.check_mark_circled_solid
-                      : CupertinoIcons.circle,
-                  color: selected ? palette.accent : palette.mutedText,
-                  size: 22,
-                ),
-              ],
+            _ThemePicker(
+              current: _draft.themeKey,
+              onChanged: (k) {
+                setState(() => _draft = _draft.copyWith(themeKey: k));
+                _persist();
+              },
             ),
-          ),
-        );
-      }).toList(),
-    );
-  }
-}
 
-class _SettingsSection extends StatelessWidget {
-  const _SettingsSection({required this.title, required this.children});
-
-  final String title;
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
-            child: Text(
-              title,
-              style: TextStyle(
-                color: palette.mutedText,
-                fontSize: 13,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 0,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Text('Accent color', style: Theme.of(context).textTheme.labelLarge),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              child: AccentSwatches(
+                selectedIndex: _draft.accentIndex,
+                onSelected: (i) {
+                  setState(() => _draft = _draft.copyWith(accentIndex: i));
+                  _persist();
+                },
               ),
             ),
-          ),
-          AppSurface(
-            borderRadius: 24,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: children,
+
+            _SettingTile(
+              title: 'Card style',
+              trailing: Text(CardStyles.labelFor(_draft.cardStyle)),
+              onTap: () async {
+                final choice = await _pickCardStyle(context, _draft.cardStyle);
+                if (choice != null) {
+                  setState(() => _draft = _draft.copyWith(cardStyle: choice));
+                  await _persist();
+                }
+              },
             ),
-          ),
-        ],
+
+            const SizedBox(height: 16),
+            _SectionHeader('Default Behavior'),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: LifetimeSlider(
+                valueMinutes: _draft.defaultLifetimeMinutes,
+                onChanged: (v) {
+                  setState(() => _draft = _draft.copyWith(defaultLifetimeMinutes: v));
+                },
+                isSteamMode: false,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: FilledButton(
+                onPressed: _persist,
+                child: const Text('Save as default lifetime'),
+              ),
+            ),
+
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: LifetimeSlider(
+                valueMinutes: _draft.defaultSteamLifetimeMinutes,
+                onChanged: (v) => setState(() => _draft = _draft.copyWith(defaultSteamLifetimeMinutes: v)),
+                isSteamMode: true,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: FilledButton(
+                onPressed: _persist,
+                child: const Text('Save as default Puff lifetime'),
+              ),
+            ),
+
+            _SwitchTile(
+              title: 'Auto-generate title from first line',
+              value: _draft.autoGenerateTitle,
+              onChanged: (v) {
+                setState(() => _draft = _draft.copyWith(autoGenerateTitle: v));
+                _persist();
+              },
+            ),
+
+            const SizedBox(height: 16),
+            _SectionHeader('Expiry Behavior'),
+
+            _SwitchTile(
+              title: 'Show seconds when < 1 hour',
+              value: _draft.showSecondsUnderOneHour,
+              onChanged: (v) {
+                setState(() => _draft = _draft.copyWith(showSecondsUnderOneHour: v));
+                _persist();
+              },
+            ),
+            _SwitchTile(
+              title: 'Gentle notifications (24h + 1h before)',
+              value: _draft.gentleNotifications,
+              onChanged: (v) {
+                setState(() => _draft = _draft.copyWith(gentleNotifications: v));
+                _persist();
+              },
+            ),
+            _SwitchTile(
+              title: 'Auto-copy to clipboard 5 min before deletion',
+              subtitle: 'Copies the note body when the app launches and detects a note is about to expire.',
+              value: _draft.autoCopyBeforeDeletion,
+              onChanged: (v) {
+                setState(() => _draft = _draft.copyWith(autoCopyBeforeDeletion: v));
+                _persist();
+              },
+            ),
+
+            const SizedBox(height: 16),
+            _SectionHeader('Privacy & Cleanup'),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: CupertinoButton.filled(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                onPressed: _nukeAll,
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(CupertinoIcons.trash, color: Colors.white),
+                    SizedBox(width: 8),
+                    Text('Nuke all notes', style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                'Emergency button. Deletes every note immediately.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ),
+
+            const SizedBox(height: 8),
+            _SettingTile(
+              title: 'Export all notes as JSON',
+              onTap: _exportAll,
+            ),
+
+            const SizedBox(height: 16),
+            _SectionHeader('Advanced'),
+
+            _SettingTile(
+              title: 'Haptic feedback intensity',
+              trailing: Text(['Off', 'Light', 'Medium', 'Strong'][_draft.hapticsIntensity.clamp(0, 3)]),
+              onTap: () async {
+                final i = await _pickHaptics(context, _draft.hapticsIntensity);
+                if (i != null) {
+                  setState(() => _draft = _draft.copyWith(hapticsIntensity: i));
+                  await _persist();
+                }
+              },
+            ),
+
+            _SettingTile(
+              title: 'Animation speed',
+              trailing: Text(AnimationSpeeds.labelFor(_draft.animationSpeed)),
+              onTap: () async {
+                final s = await _pickAnimation(context, _draft.animationSpeed);
+                if (s != null) {
+                  setState(() => _draft = _draft.copyWith(animationSpeed: s));
+                  await _persist();
+                }
+              },
+            ),
+
+            _SwitchTile(
+              title: 'Show note count in tab bar',
+              value: _draft.showNoteCountInTabBar,
+              onChanged: (v) {
+                setState(() => _draft = _draft.copyWith(showNoteCountInTabBar: v));
+                _persist();
+              },
+            ),
+
+            const SizedBox(height: 60),
+            Center(
+              child: Text(
+                'Byepasser • Notes that say bye.',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(color: colors.textSecondary.withValues(alpha: 0.5)),
+              ),
+            ),
+            const SizedBox(height: 30),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Pickers
+
+  Future<String?> _pickCardStyle(BuildContext ctx, String current) async {
+    return showCupertinoModalPopup<String>(
+      context: ctx,
+      builder: (c) => Container(
+        color: Theme.of(ctx).extension<ByepasserColors>()!.card,
+        padding: const EdgeInsets.only(bottom: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final s in CardStyles.all)
+              CupertinoActionSheetAction(
+                onPressed: () => Navigator.of(c).pop(s),
+                child: Text(CardStyles.labelFor(s) + (s == current ? '  ✓' : '')),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<int?> _pickHaptics(BuildContext ctx, int current) async {
+    return showCupertinoModalPopup<int>(
+      context: ctx,
+      builder: (c) => CupertinoActionSheet(
+        actions: List.generate(4, (i) {
+          final labels = ['Off', 'Light', 'Medium', 'Strong'];
+          return CupertinoActionSheetAction(
+            onPressed: () => Navigator.of(c).pop(i),
+            child: Text(labels[i] + (i == current ? '  ✓' : '')),
+          );
+        }),
+        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.of(c).pop(), child: const Text('Cancel')),
+      ),
+    );
+  }
+
+  Future<String?> _pickAnimation(BuildContext ctx, String current) async {
+    return showCupertinoModalPopup<String>(
+      context: ctx,
+      builder: (c) => CupertinoActionSheet(
+        actions: AnimationSpeeds.all.map((s) {
+          return CupertinoActionSheetAction(
+            onPressed: () => Navigator.of(c).pop(s),
+            child: Text(AnimationSpeeds.labelFor(s) + (s == current ? '  ✓' : '')),
+          );
+        }).toList(),
+        cancelButton: CupertinoActionSheetAction(onPressed: () => Navigator.of(c).pop(), child: const Text('Cancel')),
       ),
     );
   }
 }
 
-class _SettingsBlockLabel extends StatelessWidget {
-  const _SettingsBlockLabel(this.label);
+// Small presentational helpers
 
-  final String label;
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  const _SectionHeader(this.title);
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Text(
-      label,
-      style: TextStyle(
-        color: palette.text,
-        fontSize: 16,
-        fontWeight: FontWeight.w800,
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
+      child: Text(
+        title.toUpperCase(),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: colors.accent,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+            ),
       ),
     );
   }
 }
 
-class _SwitchSetting extends StatelessWidget {
-  const _SwitchSetting({
-    required this.label,
-    required this.value,
-    required this.onChanged,
-  });
+class _SettingTile extends StatelessWidget {
+  final String title;
+  final Widget? trailing;
+  final VoidCallback? onTap;
 
-  final String label;
+  const _SettingTile({required this.title, this.trailing, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return CupertinoListTile(
+      title: Text(title),
+      trailing: trailing ?? const CupertinoListTileChevron(),
+      onTap: onTap,
+    );
+  }
+}
+
+class _SwitchTile extends StatelessWidget {
+  final String title;
+  final String? subtitle;
   final bool value;
   final ValueChanged<bool> onChanged;
 
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: palette.text,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        CupertinoSwitch(
-          value: value,
-          activeTrackColor: palette.accent,
-          onChanged: onChanged,
-        ),
-      ],
-    );
-  }
-}
-
-class _StaticSetting extends StatelessWidget {
-  const _StaticSetting({required this.label, required this.value});
-
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            label,
-            style: TextStyle(
-              color: palette.text,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        Text(
-          value,
-          style: TextStyle(
-            color: palette.mutedText,
-            fontSize: 15,
-            fontWeight: FontWeight.w700,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _SegmentedSetting extends StatelessWidget {
-  const _SegmentedSetting({
-    required this.label,
+  const _SwitchTile({
+    required this.title,
+    this.subtitle,
     required this.value,
-    required this.values,
-    required this.labelFor,
     required this.onChanged,
   });
 
-  final String label;
-  final String value;
-  final List<String> values;
-  final String Function(String) labelFor;
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: CupertinoListTile(
+        title: Text(title),
+        subtitle: subtitle != null ? Text(subtitle!, style: const TextStyle(fontSize: 12)) : null,
+        trailing: CupertinoSwitch(value: value, onChanged: onChanged),
+      ),
+    );
+  }
+}
+
+class _ThemePicker extends StatelessWidget {
+  final String current;
   final ValueChanged<String> onChanged;
 
+  const _ThemePicker({required this.current, required this.onChanged});
+
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _SettingsBlockLabel(label),
-        const SizedBox(height: 12),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: CupertinoSlidingSegmentedControl<String>(
-            groupValue: value,
-            thumbColor: palette.accent,
-            backgroundColor: palette.cardStrong,
-            children: {
-              for (final option in values)
-                option: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  child: Text(
-                    labelFor(option),
-                    style: TextStyle(
-                      color: option == value ? palette.onAccent : palette.text,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 6,
+        children: ThemeKeys.all.map((k) {
+          final selected = k == current;
+          return GestureDetector(
+            onTap: () => onChanged(k),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+              decoration: BoxDecoration(
+                color: selected ? colors.accent : colors.cardAlt,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: selected ? colors.accent : colors.divider),
+              ),
+              child: Text(
+                ThemeKeys.labelFor(k),
+                style: TextStyle(
+                  color: selected ? colors.textOnAccent : colors.textPrimary,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  fontSize: 13,
                 ),
-            },
-            onValueChanged: (next) {
-              if (next != null) {
-                onChanged(next);
-              }
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ActionSetting extends StatelessWidget {
-  const _ActionSetting({
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-  });
-
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      onPressed: onPressed,
-      child: Row(
-        children: [
-          Icon(icon, color: palette.accent, size: 21),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: palette.text,
-                fontSize: 16,
-                fontWeight: FontWeight.w800,
               ),
             ),
-          ),
-          Icon(
-            CupertinoIcons.chevron_forward,
-            color: palette.mutedText,
-            size: 18,
-          ),
-        ],
+          );
+        }).toList(),
       ),
     );
   }
 }
 
-class _DangerButton extends StatelessWidget {
-  const _DangerButton({required this.label, required this.onPressed});
+/// Pragmatic facade for direct Hive access in Settings.
+class _SimpleStoreFacade {
+  Box<Note> get notesBox => Hive.box<Note>('notes');
+  Box<AppSettings> get settingsBox => Hive.box<AppSettings>('settings');
 
-  final String label;
-  final VoidCallback onPressed;
+  AppSettings get settings => settingsBox.get('user') ?? AppSettings.defaults();
 
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return CupertinoButton(
-      padding: EdgeInsets.zero,
-      onPressed: onPressed,
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 13),
-        decoration: BoxDecoration(
-          color: palette.urgent.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: palette.urgent.withValues(alpha: 0.38)),
-        ),
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            color: palette.urgent,
-            fontSize: 16,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-      ),
-    );
+  Future<int> sweepExpiredNotes() async {
+    final now = DateTime.now();
+    final toRemove = notesBox.values.where((n) => now.isAfter(n.expiresAt)).toList();
+    for (final n in toRemove) {
+      await notesBox.delete(n.id);
+    }
+    return toRemove.length;
   }
-}
 
-class _Divider extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final palette = context.palette;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      child: Divider(color: palette.divider, height: 1),
-    );
+  Future<Note> addNote(Note note) async {
+    await notesBox.put(note.id, note);
+    return note;
   }
-}
 
-Future<void> _confirmNuke(BuildContext context, WidgetRef ref) async {
-  final confirmed = await showCupertinoDialog<bool>(
-    context: context,
-    builder: (context) {
-      return CupertinoAlertDialog(
-        title: const Text('Nuke all notes?'),
-        content: const Text('Every local note will be deleted immediately.'),
-        actions: [
-          CupertinoDialogAction(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          CupertinoDialogAction(
-            isDestructiveAction: true,
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Nuke'),
-          ),
-        ],
-      );
-    },
-  );
-
-  if (confirmed == true) {
-    await ref.read(notesProvider.notifier).nukeAll();
-    await HapticsService.success(ref.read(settingsProvider));
+  Future<Note> updateNote(Note note) async {
+    await notesBox.put(note.id, note);
+    return note;
   }
-}
 
-Future<void> _export(BuildContext context, WidgetRef ref) async {
-  final settings = ref.read(settingsProvider);
-  final notes = ref.read(notesProvider);
-  final file = await ref
-      .read(exportServiceProvider)
-      .createJsonExport(notes: notes, settings: settings);
+  Future<void> deleteNote(String id) async => notesBox.delete(id);
 
-  await SharePlus.instance.share(
-    ShareParams(
-      files: [file],
-      subject: 'Byepasser export',
-      text: 'Byepasser JSON export',
-    ),
-  );
+  Future<void> deleteAllNotes() async => notesBox.clear();
+
+  List<Note> getAllNotesSorted() {
+    final l = notesBox.values.toList();
+    l.sort((a, b) {
+      final orderCompare = a.orderIndex.compareTo(b.orderIndex);
+      if (orderCompare != 0) return orderCompare;
+      return a.compareExpiry(b);
+    });
+    return l;
+  }
+
+  List<Note> getDyingSoonNotes({Duration threshold = const Duration(hours: 6)}) => [];
+
+  int get noteCount => notesBox.length;
+
+  Future<void> updateSettings(AppSettings s) async => settingsBox.put('user', s);
 }

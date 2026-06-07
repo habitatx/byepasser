@@ -1,212 +1,113 @@
 import 'package:flutter/cupertino.dart';
-import 'package:flutter_hooks/flutter_hooks.dart';
+import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../providers/app_providers.dart';
-import '../services/haptics_service.dart';
 import '../theme/byepasser_theme.dart';
-import '../utils/lifetime.dart';
-import '../widgets/accent_swatches.dart';
 import '../widgets/app_surface.dart';
-import '../widgets/lifetime_slider.dart';
 import '../widgets/steam_particles.dart';
+import 'note_editor_screen.dart';
 
-class SteamReleaseScreen extends HookConsumerWidget {
-  const SteamReleaseScreen({super.key});
+/// The special "A Puff" mode (friendly short-lived notes).
+/// Features frosted glass + animated steam/puff background, quick creation of short-lived notes,
+/// and "Burn Now" emphasis.
+class SteamReleaseScreen extends ConsumerWidget {
+  /// When true, this is embedded as a tab content (no extra scaffold chrome needed).
+  final bool embedded;
+
+  const SteamReleaseScreen({super.key, this.embedded = false});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final palette = context.palette;
+    final colors = Theme.of(context).extension<ByepasserColors>()!;
     final settings = ref.watch(settingsProvider);
-    final titleController = useTextEditingController();
-    final bodyController = useTextEditingController();
-    useListenable(bodyController);
-    final lifetime = useState(settings.defaultSteamLifetimeMinutes);
-    final colorTag = useState<int?>(settings.accentIndex);
 
-    return CupertinoPageScaffold(
-      backgroundColor: palette.background,
-      navigationBar: CupertinoNavigationBar(
-        middle: const Text('Steam Mode'),
-        backgroundColor: palette.background.withValues(alpha: 0.72),
-      ),
-      child: Stack(
-        children: [
-          const Positioned.fill(
-            child: SteamParticles(dense: true, opacity: 0.62),
-          ),
-          SafeArea(
-            child: ListView(
-              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 36),
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 2, 4, 18),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Let Out the Steam',
-                        style: TextStyle(
-                          color: palette.text,
-                          fontSize: 34,
-                          fontWeight: FontWeight.w800,
-                          height: 1.02,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'A short-lived private note with a clean exit.',
-                        style: TextStyle(
-                          color: palette.mutedText,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                AppSurface(
-                  borderRadius: 28,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      CupertinoTextField(
-                        controller: titleController,
-                        placeholder: 'Optional title',
-                        padding: EdgeInsets.zero,
-                        decoration: const BoxDecoration(),
-                        style: TextStyle(
-                          color: palette.text,
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                        ),
-                        placeholderStyle: TextStyle(
-                          color: palette.mutedText.withValues(alpha: 0.72),
-                          fontSize: 24,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      CupertinoTextField(
-                        controller: bodyController,
-                        minLines: 8,
-                        maxLines: 14,
-                        placeholder: 'Vent here.',
-                        padding: EdgeInsets.zero,
-                        decoration: const BoxDecoration(),
-                        style: TextStyle(
-                          color: palette.text,
-                          fontSize: 18,
-                          height: 1.32,
-                        ),
-                        placeholderStyle: TextStyle(
-                          color: palette.mutedText.withValues(alpha: 0.72),
-                          fontSize: 18,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                AppSurface(
-                  child: LifetimeSlider(
-                    label: 'Steam lifetime',
-                    value: lifetime.value,
-                    min: minSteamLifetimeMinutes,
-                    max: maxSteamLifetimeMinutes,
-                    presets: steamLifetimePresets,
-                    onChanged: (value) => lifetime.value = value
-                        .clamp(minSteamLifetimeMinutes, maxSteamLifetimeMinutes)
-                        .toInt(),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                AppSurface(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Color tag',
-                        style: TextStyle(
-                          color: palette.text,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      AccentSwatches(
-                        selectedIndex: colorTag.value,
-                        allowNone: true,
-                        onSelected: (value) => colorTag.value = value,
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 18),
-                CupertinoButton(
-                  padding: EdgeInsets.zero,
-                  onPressed: bodyController.text.trim().isEmpty
-                      ? null
-                      : () => _release(
-                          context: context,
-                          ref: ref,
-                          title: titleController.text,
-                          body: bodyController.text,
-                          lifetime: lifetime.value,
-                          colorTag: colorTag.value,
-                        ),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    decoration: BoxDecoration(
-                      color: bodyController.text.trim().isEmpty
-                          ? palette.cardStrong
-                          : palette.accent,
-                      borderRadius: BorderRadius.circular(20),
+    final content = AppSurface(
+      blur: 26,
+      tint: colors.card.withValues(alpha: 0.15),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            children: [
+              const Spacer(flex: 2),
+              // Big title
+              Text(
+                'A Puff',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                      fontSize: 46,
+                      height: 1.05,
+                      fontWeight: FontWeight.w700,
+                      color: colors.textPrimary,
                     ),
-                    child: Text(
-                      'Release Steam',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: bodyController.text.trim().isEmpty
-                            ? palette.mutedText
-                            : palette.onAccent,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'A friendly 5–30 minute note that disappears like a puff of cloud.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                      color: colors.textSecondary,
+                    ),
+              ),
+              const SizedBox(height: 32),
+
+              // Big action
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  backgroundColor: colors.accent,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                ),
+                onPressed: () async {
+                  await Navigator.of(context, rootNavigator: true).push(
+                    CupertinoPageRoute(
+                      builder: (_) => NoteEditorScreen(
+                        isSteamMode: true,
                       ),
                     ),
-                  ),
+                  );
+                  // After return, the board will have refreshed via its own watchers.
+                },
+                icon: const Icon(CupertinoIcons.wind, size: 22),
+                label: const Padding(
+                  padding: EdgeInsets.only(left: 4),
+                  child: Text('Write a Puff', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w600)),
                 ),
-              ],
-            ),
+              ),
+
+              const SizedBox(height: 18),
+
+              Text(
+                'Default puff lifetime: ${settings.defaultSteamLifetimeMinutes} min',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(color: colors.textSecondary),
+              ),
+
+              const Spacer(flex: 3),
+
+              // Decorative steam at bottom
+              SizedBox(
+                height: 110,
+                child: SteamParticles(
+                  intensity: 1.0,
+                  dense: true,
+                  tint: colors.steamTint.withValues(alpha: 0.7),
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
           ),
-        ],
+        ),
       ),
     );
-  }
 
-  Future<void> _release({
-    required BuildContext context,
-    required WidgetRef ref,
-    required String title,
-    required String body,
-    required int lifetime,
-    required int? colorTag,
-  }) async {
-    await ref
-        .read(notesProvider.notifier)
-        .createNote(
-          title: title,
-          body: body.trimRight(),
-          lifetimeMinutes: lifetime,
-          isSteamMode: true,
-          colorTag: colorTag,
-        );
-    await HapticsService.success(ref.read(settingsProvider));
-    if (context.mounted) {
-      Navigator.of(context).pop();
+    if (embedded) {
+      return CupertinoPageScaffold(
+        backgroundColor: colors.background,
+        child: content,
+      );
     }
+
+    return content;
   }
 }

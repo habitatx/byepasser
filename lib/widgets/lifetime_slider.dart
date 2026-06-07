@@ -1,101 +1,111 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
 
+/// Beautiful continuous slider + smart preset chips for lifetime selection.
+/// Used in note creation and settings.
 class LifetimeSlider extends StatelessWidget {
+  final int valueMinutes;
+  final ValueChanged<int> onChanged;
+  final bool isSteamMode; // limits range to 5-30 min
+
   const LifetimeSlider({
     super.key,
-    required this.value,
+    required this.valueMinutes,
     required this.onChanged,
-    required this.min,
-    required this.max,
-    required this.presets,
-    this.label = 'Lifetime',
+    this.isSteamMode = false,
   });
-
-  final int value;
-  final ValueChanged<int> onChanged;
-  final int min;
-  final int max;
-  final List<LifetimePreset> presets;
-  final String label;
 
   @override
   Widget build(BuildContext context) {
-    final palette = context.palette;
-    final sliderValue = minutesToSlider(value, min: min, max: max);
+    final min = 5;
+    final max = isSteamMode ? 30 : 30 * 24 * 60; // 30 days
+
+    final presets = isSteamMode
+        ? const [5, 10, 15, 20, 30]
+        : lifetimePresets;
+
+    final theme = Theme.of(context);
+    final colors = theme.extension<ByepasserColors>()!;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Current value big label
         Row(
           children: [
             Text(
-              label,
-              style: TextStyle(
-                color: palette.text,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
+              isSteamMode ? 'Puff lifetime' : 'Lifetime',
+              style: theme.textTheme.titleSmall?.copyWith(color: colors.textSecondary),
             ),
             const Spacer(),
-            Text(
-              formatLifetime(value),
-              style: TextStyle(
-                color: palette.accent,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              decoration: BoxDecoration(
+                color: colors.accent.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Text(
+                formatFullLifetime(valueMinutes),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colors.accent,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Semantics(
-          label: '$label ${formatLifetime(value)}',
+        const SizedBox(height: 10),
+
+        // Slider
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 3.5,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 9),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 18),
+            activeTrackColor: colors.accent,
+            inactiveTrackColor: colors.divider,
+            thumbColor: colors.accent,
+          ),
           child: CupertinoSlider(
-            value: sliderValue,
-            min: 0,
-            max: 1,
-            activeColor: palette.accent,
-            onChanged: (next) {
-              onChanged(sliderToMinutes(next, min: min, max: max));
-            },
+            // Using CupertinoSlider gives nicer iOS feel even inside Material
+            // but we wrap for consistency. Fall back to Slider if issues.
+            value: valueMinutes.toDouble().clamp(min.toDouble(), max.toDouble()),
+            min: min.toDouble(),
+            max: max.toDouble(),
+            divisions: isSteamMode ? 25 : null,
+            onChanged: (v) => onChanged(v.round()),
           ),
         ),
-        const SizedBox(height: 10),
+
+        const SizedBox(height: 4),
+
+        // Preset chips
         Wrap(
           spacing: 8,
-          runSpacing: 8,
-          children: presets.map((preset) {
-            final selected = preset.minutes == value;
-            return CupertinoButton(
-              padding: EdgeInsets.zero,
-              onPressed: () => onChanged(preset.minutes),
-              minimumSize: Size(0, 0),
+          runSpacing: 6,
+          children: presets.map((p) {
+            final selected = (valueMinutes - p).abs() < (isSteamMode ? 2 : 30);
+            return GestureDetector(
+              onTap: () => onChanged(p),
               child: AnimatedContainer(
-                duration: const Duration(milliseconds: 180),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
+                duration: const Duration(milliseconds: 140),
+                padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
                 decoration: BoxDecoration(
-                  color: selected
-                      ? palette.accent
-                      : palette.cardStrong.withValues(alpha: 0.78),
+                  color: selected ? colors.accent : colors.cardAlt,
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(
-                    color: selected
-                        ? palette.accent
-                        : palette.divider.withValues(alpha: 0.5),
+                    color: selected ? colors.accent : colors.divider,
+                    width: 0.8,
                   ),
                 ),
                 child: Text(
-                  preset.label,
-                  style: TextStyle(
-                    color: selected ? palette.onAccent : palette.text,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 13,
+                  formatLifetime(p),
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    color: selected ? colors.textOnAccent : colors.textPrimary,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
               ),
@@ -106,3 +116,5 @@ class LifetimeSlider extends StatelessWidget {
     );
   }
 }
+
+

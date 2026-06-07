@@ -1,107 +1,121 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:timezone/data/latest.dart' as timezone_data;
+import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../models/note.dart';
+import '../models/app_settings.dart';
 
+/// Handles all local iOS notifications for note expiry warnings.
+/// No network, fully on-device.
 class NotificationService {
-  NotificationService(this._plugin);
-
   final FlutterLocalNotificationsPlugin _plugin;
 
+  NotificationService._(this._plugin);
+
   static Future<NotificationService> create() async {
+    tz.initializeTimeZones();
+
     final plugin = FlutterLocalNotificationsPlugin();
-    timezone_data.initializeTimeZones();
 
-    const initializationSettings = InitializationSettings(
-      iOS: DarwinInitializationSettings(
-        requestAlertPermission: false,
-        requestBadgePermission: false,
-        requestSoundPermission: false,
-      ),
+    const iosSettings = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
     );
-    await plugin.initialize(initializationSettings);
 
-    return NotificationService(plugin);
+    const initSettings = InitializationSettings(iOS: iosSettings);
+
+    await plugin.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: _onNotificationTapped,
+    );
+
+    // Request permissions explicitly on iOS (required for iOS 15+ in many cases)
+    await plugin
+        .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()
+        ?.requestPermissions(alert: true, badge: true, sound: true);
+
+    return NotificationService._(plugin);
   }
 
-  Future<void> requestPermissions() async {
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-          IOSFlutterLocalNotificationsPlugin
-        >()
-        ?.requestPermissions(alert: true, badge: false, sound: true);
+  static void _onNotificationTapped(NotificationResponse response) {
+    // In a more advanced app we could navigate to the specific note using payload.
+    // For Byepasser we keep it simple: tapping just opens the app.
   }
 
-  Future<void> scheduleExpiryReminders(
-    Note note, {
-    required bool enabled,
-  }) async {
+  /// Schedule gentle notifications (24h + 1h before) if the setting is enabled.
+  /// Idempotent per note id (we cancel previous schedules for the note first).
+  Future<void> scheduleExpiryReminders(Note note, AppSettings settings) async {
+    if (!settings.gentleNotifications) return;
+
+    final now = DateTime.now();
+    if (note.expiresAt.isBefore(now)) return;
+
+    // Cancel any previous for this note
     await cancelForNote(note.id);
-    if (!enabled) {
-      return;
+
+    final noteIdHash = note.id.hashCode & 0x7fffffff; // positive 31-bit int
+
+    // 24 hours before
+    final reminder24h = note.expiresAt.subtract(const Duration(hours: 24));
+    if (reminder24h.isAfter(now)) {
+      await _plugin.zonedSchedule(
+        noteIdHash,
+        'Note expiring soon',
+        note.displayTitle,
+        tz.TZDateTime.from(reminder24h, tz.local),
+        const NotificationDetails(
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+            sound: 'default',
+          ),
+        ),
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: note.id,
+      );
     }
 
-    await requestPermissions();
-    await _scheduleOne(
-      note,
-      offset: const Duration(hours: 24),
-      slot: 24,
-      body: '"${note.displayTitle}" says bye in about 24 hours.',
-    );
-    await _scheduleOne(
-      note,
-      offset: const Duration(hours: 1),
-      slot: 1,
-      body: '"${note.displayTitle}" says bye in about 1 hour.',
-    );
+    // 1 hour before
+    final reminder1h = note.expiresAt.subtract(const Duration(hours: 1));
+    if (reminder1h.isAfter(now)) {
+      await _plugin.zonedSchedule(
+        noteIdHash + 1,
+        'Note expiring in one hour',
+        note.displayTitle,
+        tz.TZDateTime.from(reminder1h, tz.local),
+        const NotificationDetails(
+          iOS: DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+            sound: 'default',
+          ),
+        ),
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        payload: note.id,
+      );
+    }
   }
 
   Future<void> cancelForNote(String noteId) async {
-    await _plugin.cancel(_notificationId(noteId, 24));
-    await _plugin.cancel(_notificationId(noteId, 1));
+    final hash = noteId.hashCode & 0x7fffffff;
+    await _plugin.cancel(hash);
+    await _plugin.cancel(hash + 1);
   }
 
-  Future<void> cancelAll() => _plugin.cancelAll();
-
-  Future<void> _scheduleOne(
-    Note note, {
-    required Duration offset,
-    required int slot,
-    required String body,
-  }) async {
-    final fireAt = note.expiresAt.subtract(offset);
-    if (!fireAt.isAfter(DateTime.now())) {
-      return;
-    }
-
-    await _plugin.zonedSchedule(
-      _notificationId(note.id, slot),
-      'Byepasser',
-      body,
-      tz.TZDateTime.from(fireAt, tz.local),
-      const NotificationDetails(
-        iOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentBadge: false,
-          presentSound: true,
-          interruptionLevel: InterruptionLevel.passive,
-        ),
-      ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      payload: note.id,
-    );
+  /// Optional: auto-copy nudge 5 minutes before (we don't actually copy from notification,
+  /// the app does the copy when it detects on next launch/sweep if the setting is on).
+  /// We can schedule a silent heads-up if desired.
+  Future<void> scheduleAutoCopyNudge(Note note) async {
+    // Implementation left lightweight — the actual clipboard copy is performed
+    // inside the sweep logic in the app when remaining < 5 min on launch.
   }
 
-  int _notificationId(String noteId, int slot) {
-    var hash = slot * 1000003;
-    for (final unit in noteId.codeUnits) {
-      hash = 0x1fffffff & (hash + unit);
-      hash = 0x1fffffff & (hash + ((0x0007ffff & hash) << 10));
-      hash ^= hash >> 6;
-    }
-    return hash & 0x7fffffff;
+  Future<void> cancelAll() async {
+    await _plugin.cancelAll();
   }
 }

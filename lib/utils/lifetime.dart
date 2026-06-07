@@ -1,105 +1,118 @@
-import 'dart:math' as math;
+import 'package:intl/intl.dart';
 
-const minLifetimeMinutes = 5;
-const maxLifetimeMinutes = 43200;
-const minSteamLifetimeMinutes = 5;
-const maxSteamLifetimeMinutes = 30;
-
-class LifetimePreset {
-  const LifetimePreset(this.label, this.minutes);
-
-  final String label;
-  final int minutes;
-}
-
-const lifetimePresets = [
-  LifetimePreset('5m', 5),
-  LifetimePreset('15m', 15),
-  LifetimePreset('30m', 30),
-  LifetimePreset('1h', 60),
-  LifetimePreset('4h', 240),
-  LifetimePreset('8h', 480),
-  LifetimePreset('1d', 1440),
-  LifetimePreset('3d', 4320),
-  LifetimePreset('7d', 10080),
-  LifetimePreset('14d', 20160),
-  LifetimePreset('30d', 43200),
+/// Smart preset lifetimes (minutes).
+const List<int> lifetimePresets = <int>[
+  5, 15, 30,
+  60, 4 * 60, 8 * 60,
+  24 * 60, 3 * 24 * 60, 7 * 24 * 60, 14 * 24 * 60, 30 * 24 * 60,
 ];
-
-const steamLifetimePresets = [
-  LifetimePreset('5m', 5),
-  LifetimePreset('10m', 10),
-  LifetimePreset('15m', 15),
-  LifetimePreset('20m', 20),
-  LifetimePreset('30m', 30),
-];
-
-double minutesToSlider(int minutes, {required int min, required int max}) {
-  final clamped = minutes.clamp(min, max);
-  final logMin = math.log(min);
-  final logMax = math.log(max);
-  return ((math.log(clamped) - logMin) / (logMax - logMin)).clamp(0.0, 1.0);
-}
-
-int sliderToMinutes(double value, {required int min, required int max}) {
-  final logMin = math.log(min);
-  final logMax = math.log(max);
-  return math.exp(logMin + value.clamp(0.0, 1.0) * (logMax - logMin)).round();
-}
 
 String formatLifetime(int minutes) {
-  if (minutes < 60) {
-    return '$minutes min';
-  }
-  if (minutes < 1440) {
-    final hours = minutes ~/ 60;
-    final remainder = minutes % 60;
-    return remainder == 0 ? '$hours hr' : '$hours hr $remainder min';
-  }
-  final days = minutes ~/ 1440;
-  final remainderHours = (minutes % 1440) ~/ 60;
-  return remainderHours == 0 ? '$days days' : '$days days $remainderHours hr';
+  if (minutes < 60) return '${minutes}m';
+  final hours = minutes ~/ 60;
+  if (hours < 24) return '${hours}h';
+  final days = hours ~/ 24;
+  return '${days}d';
 }
 
-String formatCountdown(
-  Duration duration, {
-  required bool showSeconds,
-  bool huge = false,
-}) {
-  if (duration.isNegative) {
-    return huge ? '00:00' : 'expired';
+String formatFullLifetime(int minutes) {
+  if (minutes < 60) return '$minutes minutes';
+  final h = minutes ~/ 60;
+  final m = minutes % 60;
+  if (h < 24) {
+    return m == 0 ? '$h hours' : '$h hr $m min';
   }
+  final d = h ~/ 24;
+  return '$d days';
+}
 
-  final days = duration.inDays;
-  final hours = duration.inHours.remainder(24);
-  final minutes = duration.inMinutes.remainder(60);
-  final seconds = duration.inSeconds.remainder(60);
+/// Human friendly remaining string. Shows seconds only when < 1 hour and flag is true.
+String formatRemaining(Duration d, {required bool showSeconds}) {
+  if (d.isNegative) return 'Expired';
 
-  if (duration.inHours < 1 && showSeconds) {
-    return '${minutes.toString().padLeft(2, '0')}:'
-        '${seconds.toString().padLeft(2, '0')}';
-  }
+  final days = d.inDays;
+  final hours = d.inHours.remainder(24);
+  final minutes = d.inMinutes.remainder(60);
+  final seconds = d.inSeconds.remainder(60);
+
   if (days > 0) {
-    return huge ? '${days}d ${hours}h' : '$days days $hours hr';
+    if (hours > 0) return '${days}d ${hours}h';
+    return '${days}d';
   }
-  if (duration.inHours > 0) {
-    return huge
-        ? '${duration.inHours}h ${minutes}m'
-        : '${duration.inHours} hr $minutes min';
+  if (hours > 0) {
+    if (minutes > 0) return '${hours}h ${minutes}m';
+    return '${hours}h';
   }
-  return '$minutes min';
+  if (minutes > 0) {
+    if (showSeconds && d.inMinutes < 60) {
+      return '${minutes}m ${seconds}s';
+    }
+    return '${minutes}m';
+  }
+  return '${seconds}s';
 }
 
-bool isDyingSoon(DateTime expiresAt, DateTime now) {
-  final remaining = expiresAt.difference(now);
-  return !remaining.isNegative && remaining <= const Duration(hours: 24);
+String formatExactExpiry(DateTime dt) {
+  // e.g. "Jun 12 at 3:42 PM"
+  return DateFormat('MMM d \'at\' h:mm a').format(dt);
 }
 
-double expiryProgress(DateTime createdAt, DateTime expiresAt, DateTime now) {
-  final total = expiresAt.difference(createdAt).inSeconds;
-  if (total <= 0) {
-    return 1;
+int clampLifetime(int minutes) {
+  return minutes.clamp(5, 30 * 24 * 60);
+}
+
+int clampSteamLifetime(int minutes) {
+  return minutes.clamp(5, 30);
+}
+
+/// Simple local heuristics to suggest a good lifetime.
+/// Feels "smart" / AI-assisted without any network or ML.
+int suggestLifetimeMinutes(String body) {
+  final text = body.trim().toLowerCase();
+  if (text.isEmpty) return 60 * 24; // 1 day default
+
+  final words = text.split(RegExp(r'\s+'));
+  final length = text.length;
+
+  // Very short thoughts or one-offs → short life
+  if (length < 25 && words.length <= 5) {
+    return 15; // 15 minutes
   }
-  final elapsed = now.difference(createdAt).inSeconds.clamp(0, total);
-  return elapsed / total;
+
+  // Questions, reminders, "remember", "todo" → medium term
+  if (text.contains('?') ||
+      text.contains('remind') ||
+      text.contains('remember') ||
+      text.contains('todo') ||
+      text.contains('later')) {
+    return 60 * 24 * 3; // 3 days
+  }
+
+  // Ideas, thoughts, "what if", creative stuff → a few days
+  if (text.contains('idea') ||
+      text.contains('thought') ||
+      text.contains('what if') ||
+      text.contains('maybe')) {
+    return 60 * 24 * 2; // 2 days
+  }
+
+  // Long notes or journaling feel → week+
+  if (length > 350 || words.length > 60) {
+    return 60 * 24 * 7; // 7 days
+  }
+
+  // Default calm window
+  return 60 * 24 * 2; // 2 days
+}
+
+String getSuggestionReason(String body) {
+  final text = body.trim().toLowerCase();
+  if (text.isEmpty) return 'Balanced default';
+
+  if (text.length < 25) return 'Short & sweet';
+  if (text.contains('?')) return 'Question — keep it a bit';
+  if (text.contains('remind') || text.contains('remember')) return 'Reminder';
+  if (text.contains('idea') || text.contains('thought')) return 'Creative thought';
+  if (text.length > 350) return 'Long note — give it time';
+  return 'Fits the vibe';
 }
