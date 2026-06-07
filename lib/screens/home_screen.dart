@@ -9,6 +9,7 @@ import '../models/app_settings.dart';
 import '../models/board.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
+import '../services/gamification_service.dart';
 import '../services/haptics_service.dart';
 import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
@@ -199,6 +200,7 @@ class HomeScreen extends HookConsumerWidget {
                   );
                   if (target == null || target.id == note.boardId) return;
                   await store.moveNoteToBoard(note, target.id);
+                  await GamificationService.recordMove(ref);
                   ref.invalidate(notesProvider);
                   await haptics.selection();
                   if (!context.mounted) return;
@@ -278,6 +280,7 @@ class HomeScreen extends HookConsumerWidget {
   ) async {
     await store.recycleNote(note);
     await ref.read(notificationServiceProvider).cancelForNote(note.id);
+    await GamificationService.recordRecycle(ref);
     ref.invalidate(notesProvider);
     await haptics.light();
   }
@@ -290,6 +293,7 @@ class HomeScreen extends HookConsumerWidget {
     HapticsService haptics,
   ) async {
     await store.restoreNote(note, activeBoardId);
+    await GamificationService.recordRestore(ref);
     ref.invalidate(notesProvider);
     await haptics.success();
   }
@@ -307,6 +311,7 @@ class HomeScreen extends HookConsumerWidget {
     );
     if (confirmed != true) return;
     await store.discardRecycledNotes();
+    await GamificationService.recordDiscard(ref, count: completedCount);
     ref.invalidate(notesProvider);
     await haptics.medium();
   }
@@ -318,6 +323,7 @@ class HomeScreen extends HookConsumerWidget {
     HapticsService haptics,
   ) async {
     await store.discardRecycledNote(note.id);
+    await GamificationService.recordDiscard(ref);
     ref.invalidate(notesProvider);
     await haptics.medium();
   }
@@ -337,7 +343,10 @@ class HomeScreen extends HookConsumerWidget {
     WidgetRef ref,
     _SimpleStoreFacade store,
   ) async {
-    await store.sweepExpiredNotes();
+    final expiredCount = await store.sweepExpiredNotes();
+    if (expiredCount > 0) {
+      await GamificationService.recordExpired(ref, count: expiredCount);
+    }
     ref.invalidate(notesProvider);
   }
 
@@ -382,7 +391,7 @@ class _BoardCapsuleTitle extends StatelessWidget {
         child: Container(
           height: 44,
           padding: const EdgeInsets.symmetric(horizontal: 16),
-          decoration: colors.cardDecoration(color: colors.card, radius: 999),
+          decoration: colors.appBarCapsuleDecoration(color: colors.card),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -493,9 +502,8 @@ class _PuffFilterToggleButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final muted = colors.textSecondary.withValues(alpha: 0.58);
-    final active = colors.accent;
     return SizedBox(
-      width: 48,
+      width: 42,
       height: 34,
       child: IconButton(
         tooltip: showPuffsOnly ? 'Show all notes' : 'Show puffs only',
@@ -503,28 +511,18 @@ class _PuffFilterToggleButton extends StatelessWidget {
         padding: EdgeInsets.zero,
         iconSize: 18,
         style: IconButton.styleFrom(
-          backgroundColor: showPuffsOnly
-              ? colors.accent.withValues(alpha: 0.12)
-              : Colors.transparent,
+          backgroundColor: showPuffsOnly ? colors.accent : Colors.transparent,
           side: BorderSide(
             color: showPuffsOnly
-                ? colors.accent.withValues(alpha: 0.24)
+                ? colors.accent
                 : colors.divider.withValues(alpha: 0.65),
           ),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          minimumSize: const Size(48, 34),
+          minimumSize: const Size(42, 34),
         ),
-        icon: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(CupertinoIcons.text_bubble, size: 15, color: muted),
-            const SizedBox(width: 3),
-            Icon(
-              CupertinoIcons.wind,
-              size: 18,
-              color: showPuffsOnly ? active : muted,
-            ),
-          ],
+        icon: Icon(
+          showPuffsOnly ? CupertinoIcons.wind : CupertinoIcons.text_bubble,
+          color: showPuffsOnly ? colors.textOnAccent : muted,
         ),
       ),
     );
@@ -568,7 +566,7 @@ class _BoardEmptyCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 22),
                   Text(
-                    'Nothing to carry.',
+                    'Time for a puff...',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       color: colors.textPrimary,
@@ -1035,10 +1033,6 @@ class _BoardNoteCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final theme = Theme.of(context);
-    final noteAccent = note.colorTag == null
-        ? colors.accent
-        : ByepasserTheme.accentPalette[note.colorTag!.clamp(0, 7)];
-    final capsuleAccent = note.isSteamMode ? colors.accent : noteAccent;
     final radius = colors.cardStyle == CardStyles.minimal ? 10.0 : 18.0;
     final cardRadius = BorderRadius.circular(radius);
     final title = note.title?.trim();
@@ -1073,28 +1067,24 @@ class _BoardNoteCard extends StatelessWidget {
                                 horizontal: 10,
                               ),
                               decoration: BoxDecoration(
-                                color: capsuleAccent.withValues(alpha: 0.14),
+                                color: colors.accent,
                                 borderRadius: BorderRadius.circular(999),
-                                border: Border.all(
-                                  color: capsuleAccent.withValues(alpha: 0.34),
-                                ),
+                                border: Border.all(color: colors.accent),
                               ),
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(
-                                    note.isSteamMode
-                                        ? CupertinoIcons.wind
-                                        : CupertinoIcons.text_bubble,
+                                    CupertinoIcons.wind,
                                     size: 16,
-                                    color: capsuleAccent,
+                                    color: colors.textOnAccent,
                                   ),
                                   const SizedBox(width: 6),
                                   Text(
-                                    note.isSteamMode ? 'Puff' : 'Hum',
+                                    'Puff',
                                     style: theme.textTheme.labelMedium
                                         ?.copyWith(
-                                          color: capsuleAccent,
+                                          color: colors.textOnAccent,
                                           fontWeight: FontWeight.w800,
                                         ),
                                   ),

@@ -394,6 +394,20 @@ class ByepasserColors extends ThemeExtension<ByepasserColors> {
       border: neutralBorder,
     );
   }
+
+  /// Stable navigation capsule decoration. This intentionally ignores cardStyle
+  /// so appbar controls do not become glassmorphic or elevated with card panels.
+  BoxDecoration appBarCapsuleDecoration({Color? color, double radius = 999}) {
+    return BoxDecoration(
+      color: color ?? card,
+      borderRadius: BorderRadius.circular(radius),
+      border: Border.all(
+        color: isDark
+            ? Colors.white.withValues(alpha: 0.16)
+            : Colors.black.withValues(alpha: 0.14),
+      ),
+    );
+  }
 }
 
 class _ThemePalette {

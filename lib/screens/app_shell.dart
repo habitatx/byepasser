@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import '../providers/app_providers.dart';
+import '../services/gamification_service.dart';
 import '../theme/byepasser_theme.dart';
 import 'home_screen.dart';
 import 'settings_screen.dart';
@@ -38,8 +41,14 @@ class _AppShellState extends ConsumerState<AppShell> {
     _tabController = CupertinoTabController(initialIndex: _currentIndex);
   }
 
-  void _setActiveTab(int index) {
-    if (_currentIndex != index) {
+  void _setActiveTab(int index, {bool awardNavigation = false}) {
+    final changed = _currentIndex != index;
+    if (changed && awardNavigation) {
+      unawaited(
+        GamificationService.recordNavigation(ref).catchError((Object _) {}),
+      );
+    }
+    if (changed) {
       setState(() => _currentIndex = index);
     }
     if (_tabController.index != index) {
@@ -49,7 +58,7 @@ class _AppShellState extends ConsumerState<AppShell> {
 
   void _onTabTapped(int index) {
     if (index == 1 || index == 2) {
-      _setActiveTab(index);
+      _setActiveTab(index, awardNavigation: true);
       if (_composerOpen) {
         _composerIsHum?.value = index == 2;
         return;
@@ -70,12 +79,12 @@ class _AppShellState extends ConsumerState<AppShell> {
               isHumListenable: _composerIsHum!,
               onTabSelected: (selectedIndex) {
                 if (!mounted) return;
-                _setActiveTab(selectedIndex);
+                _setActiveTab(selectedIndex, awardNavigation: true);
               },
             )
             .then((didRelease) {
               if (!mounted) return;
-              if (didRelease == true) {
+              if (didRelease != false) {
                 _setActiveTab(0);
               }
             })
@@ -92,7 +101,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       });
       return;
     }
-    _setActiveTab(index);
+    _setActiveTab(index, awardNavigation: true);
   }
 
   @override
@@ -146,7 +155,7 @@ class _AppShellState extends ConsumerState<AppShell> {
           ),
           const BottomNavigationBarItem(
             icon: Icon(CupertinoIcons.settings),
-            label: 'Settings',
+            label: 'Vibe',
           ),
         ],
       ),

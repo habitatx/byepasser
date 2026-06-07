@@ -2,6 +2,7 @@ import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:hooks_riverpod/legacy.dart';
 
+import '../models/app_stats.dart';
 import '../models/note.dart';
 import '../models/app_settings.dart';
 import '../models/board.dart';
@@ -21,10 +22,19 @@ final boardsBoxProvider = Provider<Box<Board>>((ref) {
   throw UnimplementedError('Override in main');
 });
 
+final statsBoxProvider = Provider<Box<AppStats>>((ref) {
+  throw UnimplementedError('Override in main');
+});
+
 /// Live settings read from box
 final settingsProvider = Provider<AppSettings>((ref) {
   final box = ref.watch(settingsBoxProvider);
   return box.get('user') ?? AppSettings.defaults();
+});
+
+final appStatsProvider = Provider<AppStats>((ref) {
+  final box = ref.watch(statsBoxProvider);
+  return box.get(appStatsKey) ?? AppStats.defaults();
 });
 
 /// Notes list read directly from the authoritative Hive box.

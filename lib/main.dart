@@ -6,6 +6,7 @@ import 'package:hive/hive.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 
 import 'models/app_settings.dart';
+import 'models/app_stats.dart';
 import 'models/note.dart';
 import 'providers/app_providers.dart';
 import 'screens/app_shell.dart';
@@ -32,6 +33,7 @@ Future<void> main() async {
         notesBoxProvider.overrideWithValue(store.notesBox),
         settingsBoxProvider.overrideWithValue(store.settingsBox),
         boardsBoxProvider.overrideWithValue(store.boardsBox),
+        statsBoxProvider.overrideWithValue(store.statsBox),
         notificationServiceProvider.overrideWithValue(notificationService),
       ],
       child: const ByepasserApp(),
@@ -101,7 +103,7 @@ class _ExpiryWatcherState extends ConsumerState<ExpiryWatcher> {
     if (!mounted) return;
 
     final store = await _getStore();
-    await store.sweepExpiredNotes();
+    final expiredCount = await store.sweepExpiredNotes();
 
     final settings = store.settings;
     final notes = store.getAllNotesSorted();
@@ -123,7 +125,10 @@ class _ExpiryWatcherState extends ConsumerState<ExpiryWatcher> {
 
     // Refresh riverpod state so UI reflects deletions
     if (mounted) {
-      // notesProvider reads live from the box; no manual state push needed
+      if (expiredCount > 0) {
+        ref.invalidate(notesProvider);
+        ref.invalidate(appStatsProvider);
+      }
     }
 
     // Re-schedule notifications for whatever remains
@@ -157,8 +162,10 @@ class _ExpiryWatcherState extends ConsumerState<ExpiryWatcher> {
 class _MainStoreFacade {
   Box<Note> get notesBox => Hive.box<Note>('notes');
   Box<AppSettings> get settingsBox => Hive.box<AppSettings>('settings');
+  Box<AppStats> get statsBox => Hive.box<AppStats>('stats');
 
   AppSettings get settings => settingsBox.get('user') ?? AppSettings.defaults();
+  AppStats get stats => statsBox.get(appStatsKey) ?? AppStats.defaults();
 
   Future<int> sweepExpiredNotes() async {
     final now = DateTime.now();
@@ -167,6 +174,12 @@ class _MainStoreFacade {
         .toList();
     for (final n in doomed) {
       await notesBox.delete(n.id);
+    }
+    if (doomed.isNotEmpty) {
+      await statsBox.put(
+        appStatsKey,
+        stats.award(points: doomed.length * 6, expired: doomed.length),
+      );
     }
     return doomed.length;
   }

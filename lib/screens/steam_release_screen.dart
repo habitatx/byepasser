@@ -13,6 +13,7 @@ import 'package:image_picker/image_picker.dart';
 import '../models/app_settings.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
+import '../services/gamification_service.dart';
 import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
@@ -100,6 +101,11 @@ class SteamReleaseScreen extends HookConsumerWidget {
       await ref
           .read(notificationServiceProvider)
           .scheduleExpiryReminders(inserted, settings);
+      await GamificationService.recordRelease(
+        ref,
+        isHum: isHum,
+        attachmentCount: attachmentPaths.value.length,
+      );
       ref.invalidate(notesProvider);
       bodyController.clear();
       attachmentPaths.value = const [];
@@ -239,6 +245,11 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
       await ref
           .read(notificationServiceProvider)
           .scheduleExpiryReminders(inserted, settings);
+      await GamificationService.recordRelease(
+        ref,
+        isHum: isHum,
+        attachmentCount: attachmentPaths.value.length,
+      );
       ref.invalidate(notesProvider);
       didRelease.value = true;
       await haptics.success();
@@ -271,7 +282,7 @@ class _QuickNoteComposerDialog extends HookConsumerWidget {
           bottom: _composerTabHitZoneHeight(context),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () => Navigator.of(context, rootNavigator: true).pop(false),
+            onTap: () => Navigator.of(context, rootNavigator: true).pop(),
             child: const SizedBox.expand(),
           ),
         ),
@@ -525,7 +536,7 @@ class _FloatingComposerPanel extends StatelessWidget {
                 textCapitalization: TextCapitalization.sentences,
                 placeholder: isHum
                     ? 'Capture an inspiration...'
-                    : 'Capture a thought...',
+                    : 'Let\'s go...',
                 padding: const EdgeInsets.all(14),
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                   color: colors.textPrimary,

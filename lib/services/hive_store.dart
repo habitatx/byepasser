@@ -3,6 +3,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/note.dart';
 import '../models/app_settings.dart';
+import '../models/app_stats.dart';
 import '../models/board.dart';
 import 'image_file_store.dart';
 
@@ -12,10 +13,12 @@ class HiveStore {
   static const String notesBoxName = 'notes';
   static const String settingsBoxName = 'settings';
   static const String boardsBoxName = 'boards';
+  static const String statsBoxName = 'stats';
 
   late final Box<Note> notesBox;
   late final Box<AppSettings> settingsBox;
   late final Box<Board> boardsBox;
+  late final Box<AppStats> statsBox;
 
   HiveStore._();
 
@@ -34,12 +37,16 @@ class HiveStore {
     if (!Hive.isAdapterRegistered(boardTypeId)) {
       Hive.registerAdapter(BoardAdapter());
     }
+    if (!Hive.isAdapterRegistered(appStatsTypeId)) {
+      Hive.registerAdapter(AppStatsAdapter());
+    }
 
     final store = HiveStore._();
 
     store.notesBox = await Hive.openBox<Note>(notesBoxName);
     store.settingsBox = await Hive.openBox<AppSettings>(settingsBoxName);
     store.boardsBox = await Hive.openBox<Board>(boardsBoxName);
+    store.statsBox = await Hive.openBox<AppStats>(statsBoxName);
 
     // Ensure we have at least default settings
     if (store.settingsBox.isEmpty) {
@@ -47,6 +54,9 @@ class HiveStore {
     }
     if (!store.boardsBox.containsKey(defaultBoardId)) {
       await store.boardsBox.put(defaultBoardId, Board.defaults());
+    }
+    if (!store.statsBox.containsKey(appStatsKey)) {
+      await store.statsBox.put(appStatsKey, store._seedStatsFromVisibleNotes());
     }
     await store._ensureBoardState();
     await store._repairImagePaths();
@@ -56,8 +66,27 @@ class HiveStore {
 
   AppSettings get settings => settingsBox.get('user') ?? AppSettings.defaults();
 
+  AppStats get stats => statsBox.get(appStatsKey) ?? AppStats.defaults();
+
   Future<void> updateSettings(AppSettings newSettings) async {
     await settingsBox.put('user', newSettings);
+  }
+
+  Future<void> updateStats(AppStats newStats) async {
+    await statsBox.put(appStatsKey, newStats);
+  }
+
+  AppStats _seedStatsFromVisibleNotes() {
+    final visible = notesBox.values
+        .where((note) => note.isVisibleBoardNote)
+        .toList();
+    final puffs = visible.where((note) => note.isSteamMode).length;
+    final hums = visible.length - puffs;
+    return AppStats.seed(
+      lifetimePuffs: puffs,
+      lifetimeHums: hums,
+      totalPoints: puffs * 18 + hums * 14,
+    );
   }
 
   Future<void> _ensureBoardState() async {
@@ -139,6 +168,11 @@ class HiveStore {
 
     for (final note in toDelete) {
       await notesBox.delete(note.id);
+    }
+    if (toDelete.isNotEmpty && statsBox.isOpen) {
+      await updateStats(
+        stats.award(points: toDelete.length * 6, expired: toDelete.length),
+      );
     }
     return toDelete.length;
   }

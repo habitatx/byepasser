@@ -13,6 +13,7 @@ import '../models/app_settings.dart';
 import '../models/note.dart';
 import '../providers/app_providers.dart';
 import '../services/export_service.dart';
+import '../services/gamification_service.dart';
 import '../services/image_file_store.dart';
 import '../theme/byepasser_theme.dart';
 import '../utils/lifetime.dart';
@@ -20,6 +21,7 @@ import 'image_annotator_screen.dart';
 import '../widgets/steam_released_dialog.dart';
 
 const Duration _kEditorAutoSaveDelay = Duration(milliseconds: 650);
+const int _kMaxPuffLifetimeMinutes = 30;
 
 /// Full note creation + editing screen.
 /// - Huge live countdown at top
@@ -126,6 +128,10 @@ class NoteEditorScreen extends HookConsumerWidget {
         updated = updated.copyWith(
           expiresAt: base.expiresAt.add(Duration(minutes: diff)),
           lifetimeMinutes: draft.lifetimeMinutes,
+          isSteamMode: _steamModeAfterLifetimeChange(
+            base,
+            draft.lifetimeMinutes,
+          ),
         );
       }
 
@@ -261,6 +267,11 @@ class NoteEditorScreen extends HookConsumerWidget {
         );
         await store.addNote(newNote);
         await notif.scheduleExpiryReminders(newNote, settings);
+        await GamificationService.recordRelease(
+          ref,
+          isHum: !isSteamMode,
+          attachmentCount: attachmentPaths.value.length,
+        );
         // box mutated — provider reads live from Hive.
       } else {
         await flushExistingAutoSave();
@@ -282,28 +293,41 @@ class NoteEditorScreen extends HookConsumerWidget {
       }
       final extensionMinutes = await _showExtendLifetimeDialog(context);
       if (extensionMinutes == null) return;
+      final nextLifetimeMinutes = baseNote.lifetimeMinutes + extensionMinutes;
 
       final updated = baseNote.copyWith(
         expiresAt: baseNote.expiresAt.add(Duration(minutes: extensionMinutes)),
-        lifetimeMinutes: baseNote.lifetimeMinutes + extensionMinutes,
+        lifetimeMinutes: nextLifetimeMinutes,
         extended: true,
+        isSteamMode: _steamModeAfterLifetimeChange(
+          baseNote,
+          nextLifetimeMinutes,
+        ),
       );
       await store.updateNote(updated);
       await notif.scheduleExpiryReminders(updated, settings);
       currentNote.value = updated;
       ref.invalidate(notesProvider);
+      await GamificationService.recordExtension(ref);
       await haptics.medium();
     }
 
     Future<void> burnNow() async {
       if (note == null) return;
+      final isPuff = note.isSteamMode;
+      final confirmed = await _confirmBurnNow(context, isPuff: isPuff);
+      if (confirmed != true) return;
+      if (!context.mounted) return;
       await store.deleteNote(note.id);
       await notif.cancelForNote(note.id);
+      await GamificationService.recordRecycle(ref);
       ref.invalidate(notesProvider);
       await haptics.success();
       if (context.mounted) {
         Navigator.of(context).pop();
-        await showSteamReleased(context);
+        if (isPuff) {
+          await showSteamReleased(context);
+        }
       }
     }
 
@@ -353,6 +377,9 @@ class NoteEditorScreen extends HookConsumerWidget {
 
         final storedPath = await ImageFileStore.saveNoteAttachment(picked.path);
         attachmentPaths.value = [...attachmentPaths.value, storedPath];
+        if (currentNote.value != null) {
+          await GamificationService.recordAttachment(ref);
+        }
         await haptics.selection();
         if (!context.mounted) return;
         final annotated = await openImageAnnotator(context, storedPath);
@@ -402,14 +429,6 @@ class NoteEditorScreen extends HookConsumerWidget {
       navigationBar: CupertinoNavigationBar(
         transitionBetweenRoutes: false,
         middle: Text(isNew ? (isSteamMode ? 'A Puff' : 'New Note') : 'Note'),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: saveAndExit,
-          child: Text(
-            isNew ? 'Save' : 'Done',
-            style: TextStyle(color: colors.accent),
-          ),
-        ),
       ),
       child: SafeArea(
         child: ListView(
@@ -558,18 +577,25 @@ class NoteEditorScreen extends HookConsumerWidget {
                   backgroundColor: colors.accent.withValues(alpha: 0.9),
                 ),
               ),
-              if (note?.isSteamMode ?? false)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: FilledButton.icon(
-                    onPressed: burnNow,
-                    icon: const Icon(CupertinoIcons.flame),
-                    label: const Text('Burn Now'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: colors.danger,
-                    ),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: FilledButton.icon(
+                  onPressed: burnNow,
+                  icon: Icon(
+                    (currentNote.value?.isSteamMode ?? note?.isSteamMode) ==
+                            true
+                        ? CupertinoIcons.flame
+                        : Icons.recycling,
                   ),
+                  label: Text(
+                    (currentNote.value?.isSteamMode ?? note?.isSteamMode) ==
+                            true
+                        ? 'Burn Now'
+                        : 'Recycle',
+                  ),
+                  style: FilledButton.styleFrom(backgroundColor: colors.danger),
                 ),
+              ),
             ],
 
             if (isNew)
@@ -596,6 +622,29 @@ Future<int?> _showExtendLifetimeDialog(BuildContext context) {
   );
 }
 
+Future<bool?> _confirmBurnNow(BuildContext context, {required bool isPuff}) {
+  final noun = isPuff ? 'Puff' : 'Hum';
+  final action = isPuff ? 'Burn Now' : 'Recycle';
+  return showCupertinoDialog<bool>(
+    context: context,
+    builder: (dialogContext) => CupertinoAlertDialog(
+      title: Text('${isPuff ? 'Burn' : 'Recycle'} this $noun?'),
+      content: const Text('This sends it to Recycle now.'),
+      actions: [
+        CupertinoDialogAction(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancel'),
+        ),
+        CupertinoDialogAction(
+          isDestructiveAction: true,
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: Text(action),
+        ),
+      ],
+    ),
+  );
+}
+
 class _NoteEditorDraft {
   final String? title;
   final String body;
@@ -617,8 +666,14 @@ bool _sameEditableNoteState(Note left, Note right) {
       left.body == right.body &&
       left.expiresAt == right.expiresAt &&
       left.lifetimeMinutes == right.lifetimeMinutes &&
+      left.isSteamMode == right.isSteamMode &&
       left.colorTag == right.colorTag &&
       _sameStringList(left.attachmentPaths, right.attachmentPaths);
+}
+
+bool _steamModeAfterLifetimeChange(Note note, int lifetimeMinutes) {
+  if (!note.isSteamMode) return false;
+  return lifetimeMinutes <= _kMaxPuffLifetimeMinutes;
 }
 
 bool _sameStringList(List<String> left, List<String> right) {
