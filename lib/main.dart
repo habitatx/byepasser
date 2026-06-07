@@ -31,6 +31,7 @@ Future<void> main() async {
         // Provide the real boxes so providers/screens can use them if needed
         notesBoxProvider.overrideWithValue(store.notesBox),
         settingsBoxProvider.overrideWithValue(store.settingsBox),
+        boardsBoxProvider.overrideWithValue(store.boardsBox),
         notificationServiceProvider.overrideWithValue(notificationService),
       ],
       child: const ByepasserApp(),
@@ -60,9 +61,7 @@ class ByepasserApp extends ConsumerWidget {
     return MaterialApp(
       title: 'Byepasser',
       debugShowCheckedModeBanner: false,
-      theme: followSystem
-          ? lightish
-          : ByepasserTheme.dataFor(settings),
+      theme: followSystem ? lightish : ByepasserTheme.dataFor(settings),
       darkTheme: followSystem ? darkish : null,
       themeMode: followSystem ? ThemeMode.system : ThemeMode.light,
       home: const ExpiryWatcher(child: AppShell()),
@@ -92,7 +91,10 @@ class _ExpiryWatcherState extends ConsumerState<ExpiryWatcher> {
   void initState() {
     super.initState();
     _runSweepAndAutoCopy();
-    _timer = Timer.periodic(const Duration(seconds: 25), (_) => _runSweepAndAutoCopy());
+    _timer = Timer.periodic(
+      const Duration(seconds: 25),
+      (_) => _runSweepAndAutoCopy(),
+    );
   }
 
   Future<void> _runSweepAndAutoCopy() async {
@@ -160,7 +162,9 @@ class _MainStoreFacade {
 
   Future<int> sweepExpiredNotes() async {
     final now = DateTime.now();
-    final doomed = notesBox.values.where((n) => now.isAfter(n.expiresAt)).toList();
+    final doomed = notesBox.values
+        .where((n) => !n.isDeleted && now.isAfter(n.expiresAt))
+        .toList();
     for (final n in doomed) {
       await notesBox.delete(n.id);
     }
@@ -168,7 +172,7 @@ class _MainStoreFacade {
   }
 
   List<Note> getAllNotesSorted() {
-    final l = notesBox.values.toList();
+    final l = notesBox.values.where((note) => note.isVisibleBoardNote).toList();
     l.sort((a, b) => a.compareExpiry(b));
     return l;
   }

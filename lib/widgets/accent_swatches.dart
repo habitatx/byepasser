@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/byepasser_theme.dart';
 
-/// Horizontal scrollable accent color picker used in Settings.
+/// Full-width modular accent color picker used in Settings.
 class AccentSwatches extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onSelected;
@@ -18,46 +18,52 @@ class AccentSwatches extends StatelessWidget {
     final colors = Theme.of(context).extension<ByepasserColors>()!;
     final palette = ByepasserTheme.accentPalette;
 
-    return SizedBox(
-      height: 52,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 4),
-        itemCount: palette.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 12),
-        itemBuilder: (context, i) {
-          final c = palette[i];
-          final isSel = i == selectedIndex;
-          return GestureDetector(
-            onTap: () => onSelected(i),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 160),
-              width: 42,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 8.0;
+        final itemWidth = (constraints.maxWidth - gap * 3) / 4;
+        return Wrap(
+          spacing: gap,
+          runSpacing: gap,
+          children: List.generate(palette.length, (i) {
+            final c = palette[i];
+            final isSel = i == selectedIndex;
+            return SizedBox(
+              width: itemWidth,
               height: 42,
-              decoration: BoxDecoration(
-                color: c,
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSel ? colors.textPrimary : Colors.transparent,
-                  width: isSel ? 2.5 : 0,
+              child: GestureDetector(
+                onTap: () => onSelected(i),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: c,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isSel
+                          ? colors.textPrimary
+                          : colors.divider.withValues(alpha: 0.5),
+                      width: isSel ? 2 : 0.5,
+                    ),
+                    boxShadow: isSel
+                        ? [
+                            BoxShadow(
+                              color: c.withValues(alpha: 0.45),
+                              blurRadius: 14,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: isSel
+                      ? Icon(Icons.check, size: 18, color: colors.textOnAccent)
+                      : null,
                 ),
-                boxShadow: isSel
-                    ? [
-                        BoxShadow(
-                          color: c.withValues(alpha: 0.45),
-                          blurRadius: 14,
-                          spreadRadius: 1,
-                        )
-                      ]
-                    : null,
               ),
-              child: isSel
-                  ? Icon(Icons.check, size: 18, color: colors.textOnAccent)
-                  : null,
-            ),
-          );
-        },
-      ),
+            );
+          }),
+        );
+      },
     );
   }
 }

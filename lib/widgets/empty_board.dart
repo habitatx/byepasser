@@ -7,11 +7,7 @@ class EmptyBoard extends StatelessWidget {
   final bool isFiltered; // true = Dying Soon is empty
   final VoidCallback? onCreatePuff;
 
-  const EmptyBoard({
-    super.key,
-    this.isFiltered = false,
-    this.onCreatePuff,
-  });
+  const EmptyBoard({super.key, this.isFiltered = false, this.onCreatePuff});
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +21,9 @@ class EmptyBoard extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
-              isFiltered ? Icons.hourglass_bottom_rounded : Icons.note_alt_outlined,
+              isFiltered
+                  ? Icons.hourglass_bottom_rounded
+                  : Icons.note_alt_outlined,
               size: 52,
               color: colors.textSecondary.withValues(alpha: 0.35),
             ),
@@ -68,14 +66,14 @@ class EmptyBoard extends StatelessWidget {
               OutlinedButton.icon(
                 onPressed: onCreatePuff,
                 icon: const Icon(Icons.auto_awesome),
-                label: const Text(
-                  'Write a Puff',
-                  style: TextStyle(decoration: TextDecoration.none),
-                ),
+                label: const Text('Write a Puff'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: colors.accent,
                   side: BorderSide(color: colors.accent.withValues(alpha: 0.5)),
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 10,
+                  ),
                 ),
               ),
             ],
@@ -107,11 +105,7 @@ class _PromptChip extends StatelessWidget {
         ),
         child: Text(
           text,
-          style: TextStyle(
-            fontSize: 12,
-            color: colors.textSecondary,
-            decoration: TextDecoration.none,
-          ),
+          style: TextStyle(fontSize: 12, color: colors.textSecondary),
         ),
       ),
     );

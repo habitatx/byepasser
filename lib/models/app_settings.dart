@@ -1,5 +1,7 @@
 import 'package:hive/hive.dart';
 
+import 'board.dart';
+
 const int settingsTypeId = 1;
 
 /// All user-configurable settings. Persisted in a dedicated Hive box.
@@ -41,6 +43,9 @@ class AppSettings extends HiveObject {
   @HiveField(11)
   final bool showNoteCountInTabBar;
 
+  @HiveField(12)
+  final String selectedBoardId;
+
   AppSettings({
     required this.themeKey,
     required this.accentIndex,
@@ -54,22 +59,24 @@ class AppSettings extends HiveObject {
     required this.hapticsIntensity,
     required this.animationSpeed,
     required this.showNoteCountInTabBar,
+    required this.selectedBoardId,
   });
 
   factory AppSettings.defaults() => AppSettings(
-        themeKey: ThemeKeys.whiteCanvas,
-        accentIndex: 0,
-        cardStyle: CardStyles.glassmorphic,
-        defaultLifetimeMinutes: 7 * 24 * 60, // 7 days
-        defaultSteamLifetimeMinutes: 15,
-        autoGenerateTitle: true,
-        showSecondsUnderOneHour: true,
-        gentleNotifications: true,
-        autoCopyBeforeDeletion: true,
-        hapticsIntensity: 2,
-        animationSpeed: AnimationSpeeds.normal,
-        showNoteCountInTabBar: true,
-      );
+    themeKey: ThemeKeys.whiteCanvas,
+    accentIndex: 0,
+    cardStyle: CardStyles.glassmorphic,
+    defaultLifetimeMinutes: 7 * 24 * 60, // 7 days
+    defaultSteamLifetimeMinutes: 15,
+    autoGenerateTitle: true,
+    showSecondsUnderOneHour: true,
+    gentleNotifications: true,
+    autoCopyBeforeDeletion: true,
+    hapticsIntensity: 2,
+    animationSpeed: AnimationSpeeds.normal,
+    showNoteCountInTabBar: true,
+    selectedBoardId: defaultBoardId,
+  );
 
   AppSettings copyWith({
     String? themeKey,
@@ -84,22 +91,27 @@ class AppSettings extends HiveObject {
     int? hapticsIntensity,
     String? animationSpeed,
     bool? showNoteCountInTabBar,
+    String? selectedBoardId,
   }) {
     return AppSettings(
       themeKey: themeKey ?? this.themeKey,
       accentIndex: accentIndex ?? this.accentIndex,
       cardStyle: cardStyle ?? this.cardStyle,
-      defaultLifetimeMinutes: defaultLifetimeMinutes ?? this.defaultLifetimeMinutes,
+      defaultLifetimeMinutes:
+          defaultLifetimeMinutes ?? this.defaultLifetimeMinutes,
       defaultSteamLifetimeMinutes:
           defaultSteamLifetimeMinutes ?? this.defaultSteamLifetimeMinutes,
       autoGenerateTitle: autoGenerateTitle ?? this.autoGenerateTitle,
       showSecondsUnderOneHour:
           showSecondsUnderOneHour ?? this.showSecondsUnderOneHour,
       gentleNotifications: gentleNotifications ?? this.gentleNotifications,
-      autoCopyBeforeDeletion: autoCopyBeforeDeletion ?? this.autoCopyBeforeDeletion,
+      autoCopyBeforeDeletion:
+          autoCopyBeforeDeletion ?? this.autoCopyBeforeDeletion,
       hapticsIntensity: hapticsIntensity ?? this.hapticsIntensity,
       animationSpeed: animationSpeed ?? this.animationSpeed,
-      showNoteCountInTabBar: showNoteCountInTabBar ?? this.showNoteCountInTabBar,
+      showNoteCountInTabBar:
+          showNoteCountInTabBar ?? this.showNoteCountInTabBar,
+      selectedBoardId: selectedBoardId ?? this.selectedBoardId,
     );
   }
 }
@@ -218,13 +230,14 @@ class AppSettingsAdapter extends TypeAdapter<AppSettings> {
       hapticsIntensity: fields[9] as int,
       animationSpeed: fields[10] as String,
       showNoteCountInTabBar: fields[11] as bool,
+      selectedBoardId: (fields[12] as String?) ?? defaultBoardId,
     );
   }
 
   @override
   void write(BinaryWriter writer, AppSettings obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.themeKey)
       ..writeByte(1)
@@ -248,7 +261,9 @@ class AppSettingsAdapter extends TypeAdapter<AppSettings> {
       ..writeByte(10)
       ..write(obj.animationSpeed)
       ..writeByte(11)
-      ..write(obj.showNoteCountInTabBar);
+      ..write(obj.showNoteCountInTabBar)
+      ..writeByte(12)
+      ..write(obj.selectedBoardId);
   }
 
   @override

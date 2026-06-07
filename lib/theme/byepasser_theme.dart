@@ -20,7 +20,14 @@ class ByepasserTheme {
 
   static String accentName(int index) {
     const names = [
-      'Sky', 'Sage', 'Terracotta', 'Lavender', 'Gold', 'Rose', 'Teal', 'Periwinkle'
+      'Sky',
+      'Sage',
+      'Terracotta',
+      'Lavender',
+      'Gold',
+      'Rose',
+      'Teal',
+      'Periwinkle',
     ];
     return names[index.clamp(0, 7)];
   }
@@ -35,13 +42,13 @@ class ByepasserTheme {
     final cardStyle = settings.cardStyle;
 
     final palette = _paletteFor(key);
-    final brightness = (key == ThemeKeys.deepDusk || key == ThemeKeys.obsidianVoid)
+    final brightness =
+        (key == ThemeKeys.deepDusk || key == ThemeKeys.obsidianVoid)
         ? Brightness.dark
         : Brightness.light;
 
     final base = ThemeData(
       brightness: brightness,
-      fontFamily: 'SF Pro', // Explicit system font for iOS (no asset needed)
       scaffoldBackgroundColor: palette.background,
       colorScheme: ColorScheme(
         brightness: brightness,
@@ -61,29 +68,27 @@ class ByepasserTheme {
         elevation: 0,
         centerTitle: false,
         titleTextStyle: _textThemeFor(palette).headlineSmall?.copyWith(
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.3,
-            ),
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0,
+        ),
       ),
       cupertinoOverrideTheme: CupertinoThemeData(
         brightness: brightness,
         primaryColor: accent,
         barBackgroundColor: palette.background.withValues(alpha: 0.92),
         textTheme: CupertinoTextThemeData(
-          // Explicit system font + no decoration to prevent inherited yellow underlines
-          // from Material/Cupertino theme composition on iOS.
-          textStyle: const TextStyle(fontFamily: 'SF Pro', decoration: TextDecoration.none),
-          navLargeTitleTextStyle: _textThemeFor(palette).headlineLarge?.copyWith(
+          textStyle: TextStyle(color: palette.textPrimary),
+          navLargeTitleTextStyle: _textThemeFor(palette).headlineLarge
+              ?.copyWith(
                 fontWeight: FontWeight.w700,
-                letterSpacing: -1.0,
+                letterSpacing: 0,
                 color: palette.textPrimary,
-                decoration: TextDecoration.none,
               ),
           navTitleTextStyle: _textThemeFor(palette).titleLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-                color: palette.textPrimary,
-                decoration: TextDecoration.none,
-              ),
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0,
+            color: palette.textPrimary,
+          ),
         ),
       ),
       cardTheme: CardThemeData(
@@ -91,7 +96,9 @@ class ByepasserTheme {
         elevation: cardStyle == CardStyles.elevated ? 8 : 0,
         shadowColor: palette.shadow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(cardStyle == CardStyles.minimal ? 8 : 16),
+          borderRadius: BorderRadius.circular(
+            cardStyle == CardStyles.minimal ? 8 : 16,
+          ),
         ),
         margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       ),
@@ -190,17 +197,52 @@ class ByepasserTheme {
 
   static TextTheme _textThemeFor(_ThemePalette p) {
     return TextTheme(
-      displayLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -1.2, decoration: TextDecoration.none),
-      displayMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -0.8, decoration: TextDecoration.none),
-      headlineLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w700, letterSpacing: -0.6, decoration: TextDecoration.none),
-      headlineMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, letterSpacing: -0.4, decoration: TextDecoration.none),
-      headlineSmall: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, decoration: TextDecoration.none),
-      titleLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w600, letterSpacing: -0.3, decoration: TextDecoration.none),
-      titleMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w500, decoration: TextDecoration.none),
-      bodyLarge: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w400, height: 1.35, decoration: TextDecoration.none),
-      bodyMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w400, height: 1.4, decoration: TextDecoration.none),
-      bodySmall: TextStyle(color: p.textSecondary, fontWeight: FontWeight.w400, decoration: TextDecoration.none),
-      labelLarge: TextStyle(color: p.textSecondary, fontWeight: FontWeight.w500, letterSpacing: 0.2, decoration: TextDecoration.none),
+      displayLarge: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0,
+      ),
+      displayMedium: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0,
+      ),
+      headlineLarge: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0,
+      ),
+      headlineMedium: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0,
+      ),
+      headlineSmall: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w600,
+      ),
+      titleLarge: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w600,
+        letterSpacing: 0,
+      ),
+      titleMedium: TextStyle(color: p.textPrimary, fontWeight: FontWeight.w500),
+      bodyLarge: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w400,
+        height: 1.35,
+      ),
+      bodyMedium: TextStyle(
+        color: p.textPrimary,
+        fontWeight: FontWeight.w400,
+        height: 1.4,
+      ),
+      bodySmall: TextStyle(color: p.textSecondary, fontWeight: FontWeight.w400),
+      labelLarge: TextStyle(
+        color: p.textSecondary,
+        fontWeight: FontWeight.w500,
+        letterSpacing: 0,
+      ),
     );
   }
 }
@@ -302,24 +344,29 @@ class ByepasserColors extends ThemeExtension<ByepasserColors> {
   }
 
   /// Helper for card container decoration that respects the chosen card style.
-  BoxDecoration cardDecoration({bool isSteam = false, double blur = 18}) {
-    final baseColor = card;
-    final radius = cardStyle == CardStyles.minimal ? 10.0 : 18.0;
+  BoxDecoration cardDecoration({
+    bool isSteam = false,
+    double blur = 18,
+    Color? color,
+    double? radius,
+  }) {
+    final baseColor = color ?? card;
+    final resolvedRadius =
+        radius ?? (cardStyle == CardStyles.minimal ? 10.0 : 18.0);
+    final neutralBorder = Border.all(
+      color: isDark
+          ? Colors.white.withValues(alpha: 0.18)
+          : Colors.black.withValues(alpha: 0.16),
+      width: 1,
+    );
 
     if (cardStyle == CardStyles.glassmorphic) {
       return BoxDecoration(
         color: baseColor.withValues(alpha: isDark ? 0.72 : 0.78),
-        borderRadius: BorderRadius.circular(radius),
-        border: Border.all(
-          color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.035),
-          width: 0.5,
-        ),
+        borderRadius: BorderRadius.circular(resolvedRadius),
+        border: neutralBorder,
         boxShadow: [
-          BoxShadow(
-            color: shadow,
-            blurRadius: 24,
-            offset: const Offset(0, 8),
-          ),
+          BoxShadow(color: shadow, blurRadius: 24, offset: const Offset(0, 8)),
         ],
       );
     }
@@ -327,10 +374,15 @@ class ByepasserColors extends ThemeExtension<ByepasserColors> {
     if (cardStyle == CardStyles.elevated) {
       return BoxDecoration(
         color: baseColor,
-        borderRadius: BorderRadius.circular(radius),
+        borderRadius: BorderRadius.circular(resolvedRadius),
+        border: neutralBorder,
         boxShadow: [
           BoxShadow(color: shadow, blurRadius: 18, offset: const Offset(0, 10)),
-          BoxShadow(color: shadow.withValues(alpha: 0.5), blurRadius: 4, offset: const Offset(0, 2)),
+          BoxShadow(
+            color: shadow.withValues(alpha: 0.5),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
         ],
       );
     }
@@ -338,8 +390,8 @@ class ByepasserColors extends ThemeExtension<ByepasserColors> {
     // minimal
     return BoxDecoration(
       color: baseColor,
-      borderRadius: BorderRadius.circular(radius),
-      border: Border.all(color: divider, width: 0.5),
+      borderRadius: BorderRadius.circular(resolvedRadius),
+      border: neutralBorder,
     );
   }
 }
